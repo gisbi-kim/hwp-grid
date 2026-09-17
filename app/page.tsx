@@ -31,6 +31,7 @@ export default function Home(){
   const current=useRef<DocumentSession|null>(null),loadId=useRef(0),mounted=useRef(true),dragDepth=useRef(0);
   const restoring=useRef<SavedView|null>(null),anchor=useRef<{x:number;y:number;cx:number;cy:number;oldScale:number}|null>(null);
   const drag=useRef<{id:number;x:number;y:number;left:number;top:number;moved:boolean}|null>(null);
+  const touchMoved=useRef(false);
   const layout=useMemo(()=>gridLayout(session?.pages||[],cols,viewport.width,zoom),[session,cols,viewport.width,zoom]);
   const currentPage=session?Math.min(session.pages.length,Math.max(1,Math.floor(Math.max(0,viewport.top+.5)/layout.rowHeight)*cols+1)):1;
   const viewState=useRef({cols,zoom,scale:layout.scale});viewState.current={cols,zoom,scale:layout.scale};
@@ -69,6 +70,63 @@ export default function Home(){
   useEffect(()=>{if(!session)return;const timer=setTimeout(saveView,180);return()=>clearTimeout(timer);},[session,cols,zoom,viewport.left,viewport.top,saveView]);
   const changeZoom=useCallback((factor:number,cx?:number,cy?:number)=>{const el=stage.current;if(!el||!current.current)return;const v=viewState.current;const x=cx??el.clientWidth/2,y=cy??el.clientHeight/2;anchor.current={x:el.scrollLeft+x,y:el.scrollTop+y,cx:x,cy:y,oldScale:v.scale};setZoom(z=>Math.max(.2,Math.min(8,z*factor)));},[]);
   useEffect(()=>{const el=stage.current;if(!el)return;const wheel=(e:WheelEvent)=>{if(!current.current||!(e.ctrlKey||e.metaKey))return;e.preventDefault();const r=el.getBoundingClientRect();changeZoom(Math.exp(-Math.max(-150,Math.min(150,e.deltaY*(e.deltaMode===1?16:1)))*.002),e.clientX-r.left,e.clientY-r.top);};el.addEventListener('wheel',wheel,{passive:false});return()=>el.removeEventListener('wheel',wheel);},[changeZoom]);
+  // Own touch gestures only inside an opened document; toolbar/browser zoom stays native.
+  useEffect(()=>{
+    const el=stage.current;if(!el||!session)return;
+    const points=new Map<number,{x:number;y:number}>();
+    let gesture:{distance:number;zoom:number;x:number;y:number}|null=null;
+    const pair=()=>Array.from(points.values()).slice(0,2);
+    const begin=()=>{
+      if(points.size<2){gesture=null;return;}
+      const [a,b]=pair(),v=viewState.current,r=el.getBoundingClientRect();
+      const g=gridLayout(session.pages,v.cols,el.clientWidth,v.zoom);
+      gesture={distance:Math.max(1,Math.hypot(b.x-a.x,b.y-a.y)),zoom:v.zoom,
+        x:(el.scrollLeft+(a.x+b.x)/2-r.left-g.items[0].left)/g.scale,
+        y:(el.scrollTop+(a.y+b.y)/2-r.top-28)/g.scale};
+      touchMoved.current=true;
+    };
+    const down=(e:PointerEvent)=>{
+      if(e.pointerType!=='touch')return;
+      if(!points.size)touchMoved.current=false;
+      points.set(e.pointerId,{x:e.clientX,y:e.clientY});
+      el.setPointerCapture(e.pointerId);begin();
+    };
+    const move=(e:PointerEvent)=>{
+      const previous=points.get(e.pointerId);if(!previous)return;
+      points.set(e.pointerId,{x:e.clientX,y:e.clientY});
+      if(points.size===1){
+        const dx=e.clientX-previous.x,dy=e.clientY-previous.y;
+        if(dx||dy)touchMoved.current=true;
+        el.scrollLeft-=dx;el.scrollTop-=dy;return;
+      }
+      if(!gesture)return;
+      const [a,b]=pair(),r=el.getBoundingClientRect();
+      const next=Math.max(.2,Math.min(8,gesture.zoom*Math.hypot(b.x-a.x,b.y-a.y)/gesture.distance));
+      const g=gridLayout(session.pages,viewState.current.cols,el.clientWidth,next);
+      const cx=(a.x+b.x)/2-r.left,cy=(a.y+b.y)/2-r.top;
+      if(next===viewState.current.zoom){
+        el.scrollLeft=gesture.x*g.scale+g.items[0].left-cx;
+        el.scrollTop=gesture.y*g.scale+28-cy;
+      }else{
+        anchor.current={x:gesture.x,y:gesture.y,cx:cx-g.items[0].left,cy:cy-28,oldScale:1};
+        setZoom(next);
+      }
+    };
+    const end=(e:PointerEvent)=>{
+      if(!points.delete(e.pointerId))return;
+      if(el.hasPointerCapture(e.pointerId))el.releasePointerCapture(e.pointerId);
+      begin();
+    };
+    const reset=()=>{points.clear();gesture=null;};
+    el.addEventListener('pointerdown',down);el.addEventListener('pointermove',move);
+    el.addEventListener('pointerup',end);el.addEventListener('pointercancel',end);
+    el.addEventListener('lostpointercapture',end);window.addEventListener('blur',reset);
+    return()=>{
+      el.removeEventListener('pointerdown',down);el.removeEventListener('pointermove',move);
+      el.removeEventListener('pointerup',end);el.removeEventListener('pointercancel',end);
+      el.removeEventListener('lostpointercapture',end);window.removeEventListener('blur',reset);
+    };
+  },[session]);
   const go=(page:number)=>{const el=stage.current;if(!el||!session)return;const index=Math.max(0,Math.min(session.pages.length-1,Math.round(page)-1));el.scrollTop=layout.items[index].top-28;el.scrollLeft=0;setSelected(index);setPageInput(String(index+1));};
   const fit=()=>{anchor.current=null;if(zoom===1){restoring.current=null;if(stage.current)stage.current.scrollLeft=0;return;}const s=current.current;if(s)restoring.current={key:s.key,cols,zoom:1,left:0,top:Math.floor((currentPage-1)/cols)*(Math.max(...s.pages.map(p=>p.height))+24)};setZoom(1);if(zoom===1&&stage.current)stage.current.scrollLeft=0;};
   const chooseCols=(n:number)=>{if(n===cols)return;anchor.current=null;if(session)restoring.current={key:session.key,cols:n,zoom:1,left:0,top:Math.floor((currentPage-1)/n)*(Math.max(...session.pages.map(p=>p.height))+24)};setCols(n);setZoom(1);};
@@ -82,9 +140,9 @@ export default function Home(){
       <div className="toolbar-spacer"/><div className="control-group"><Button variant="ghost" size="icon" disabled={!session||zoom<=.2} aria-label="축소" onClick={()=>changeZoom(1/1.25)}><Minus/></Button><output className="zoom-label" aria-label="확대 배율">{Math.round(zoom*100)}%</output><Button variant="ghost" size="icon" disabled={!session||zoom>=8} aria-label="확대" onClick={()=>changeZoom(1.25)}><Plus/></Button><Button variant="secondary" disabled={!session} onClick={fit} title="화면 맞춤 (0)"><Scan/><span className="fit-label">화면 맞춤</span></Button><Button variant="ghost" size="icon" aria-label="전체 화면" onClick={async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch{setNotice('이 브라우저에서는 전체 화면을 사용할 수 없어.');}}}><Maximize/></Button></div>
       <span className="divider"/><AlertDialog><AlertDialogTrigger asChild><Button variant="ghost" size="icon" disabled={!session||!!busy} aria-label="저장된 문서 삭제" title="저장된 문서 삭제"><Trash2/></Button></AlertDialogTrigger><AlertDialogContent className="delete-dialog"><AlertDialogHeader><AlertDialogTitle>저장된 문서를 지울까?</AlertDialogTitle><AlertDialogDescription>이 브라우저에 보관한 문서와 보기 위치를 지워. 컴퓨터에 있는 원본 파일은 그대로 남아.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>취소</AlertDialogCancel><AlertDialogAction onClick={()=>void clear()}>지우기</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     </nav>
-    <div ref={stage} tabIndex={0} role="region" aria-label="문서 페이지 격자" className={`stage ${session?'ready':''} ${dragging?'dragging':''}`} onScroll={e=>{const el=e.currentTarget;setViewport(v=>({...v,left:el.scrollLeft,top:el.scrollTop}));}} onKeyDown={e=>{if(e.ctrlKey||e.metaKey||e.altKey)return;if(e.key==='ArrowRight'){e.preventDefault();go(currentPage+cols);}else if(e.key==='ArrowLeft'){e.preventDefault();go(currentPage-cols);}else if(e.key==='0')fit();else if(e.key==='+'||e.key==='=')changeZoom(1.25);else if(e.key==='-')changeZoom(1/1.25);}} onPointerDown={e=>{if(!session||e.button!==0||e.pointerType==='touch')return;const el=e.currentTarget;if(e.nativeEvent.offsetX>=el.clientWidth&&e.target===el)return;el.focus();drag.current={id:e.pointerId,x:e.clientX,y:e.clientY,left:el.scrollLeft,top:el.scrollTop,moved:false};}} onPointerMove={e=>{const d=drag.current;if(!d||d.id!==e.pointerId)return;const dx=e.clientX-d.x,dy=e.clientY-d.y;if(Math.abs(dx)+Math.abs(dy)>4){d.moved=true;setDragging(true);e.currentTarget.setPointerCapture(d.id);e.currentTarget.scrollLeft=d.left-dx;e.currentTarget.scrollTop=d.top-dy;}}} onPointerUp={endDrag} onPointerCancel={endDrag}>
+    <div ref={stage} tabIndex={0} role="region" aria-label="문서 페이지 격자" className={`stage ${session?'ready':''} ${dragging?'dragging':''}`} onScroll={e=>{const el=e.currentTarget;setViewport(v=>({...v,left:el.scrollLeft,top:el.scrollTop}));}} onKeyDown={e=>{if(e.ctrlKey||e.metaKey||e.altKey)return;if(e.key==='ArrowRight'){e.preventDefault();go(currentPage+cols);}else if(e.key==='ArrowLeft'){e.preventDefault();go(currentPage-cols);}else if(e.key==='0')fit();else if(e.key==='+'||e.key==='=')changeZoom(1.25);else if(e.key==='-')changeZoom(1/1.25);}} onPointerDown={e=>{if(!session||e.button!==0||e.pointerType==='touch')return;const el=e.currentTarget;if(e.nativeEvent.offsetX>=el.clientWidth&&e.target===el)return;touchMoved.current=false;el.focus();drag.current={id:e.pointerId,x:e.clientX,y:e.clientY,left:el.scrollLeft,top:el.scrollTop,moved:false};}} onPointerMove={e=>{const d=drag.current;if(!d||d.id!==e.pointerId)return;const dx=e.clientX-d.x,dy=e.clientY-d.y;if(Math.abs(dx)+Math.abs(dy)>4){d.moved=true;setDragging(true);e.currentTarget.setPointerCapture(d.id);e.currentTarget.scrollLeft=d.left-dx;e.currentTarget.scrollTop=d.top-dy;}}} onPointerUp={endDrag} onPointerCancel={endDrag}>
       {busy&&<div className="loading-bar" role="status"><LoaderCircle className="spin" size={17}/>{busy}</div>}
-      {session?<div className="world" style={{width:layout.width,height:layout.height}}>{layout.items.map((p,i)=>{const visible=p.top<viewport.top+viewport.height+450&&p.top+p.height>viewport.top-450&&p.left<viewport.left+viewport.width+250&&p.left+p.width>viewport.left-250;return <section key={`${session.key}-${i}`} className={`sheet ${selected===i?'selected':''}`} style={p} aria-label={`${i+1}쪽`} onClick={()=>{if(!drag.current?.moved)setSelected(i);}} onDoubleClick={()=>{const el=stage.current;if(!el)return;const page=session.pages[i];const z=Math.min((el.clientWidth-56)/page.width,(el.clientHeight-56)/page.height)/layout.fit;restoring.current={key:session.key,cols,zoom:z,left:Math.max(0,p.left/layout.scale-28/(layout.fit*z)),top:Math.max(0,p.top/layout.scale-28/(layout.fit*z))};setZoom(Math.max(.2,Math.min(8,z)));}}><PageContent session={session} index={i} visible={visible}/><span className="sheet-num">{i+1}</span></section>;})}</div>:<div className="welcome"><div className="welcome-inner"><div className="file-icon"><FileText size={42}/></div><h1>한글 문서를 펼쳐 봐.</h1><p>HWP·HWPX 파일을 여기에 끌어다 놓고<br/>여러 페이지를 한눈에 읽어 봐.</p><div className="format-tags"><span>HWP</span><span>HWPX</span></div><Button size="lg" onClick={()=>fileInput.current?.click()}><FolderOpen/>파일 선택</Button><div className="privacy-note"><ShieldCheck size={15}/>문서는 이 브라우저 안에서만 처리돼.</div><div className="shortcuts"><span><kbd>휠</kbd>스크롤</span><span><kbd>드래그</kbd>이동</span><span><kbd>Ctrl/⌘ + 휠</kbd>확대</span></div><div className="compat-note">글꼴이나 복잡한 표·수식은 한글 프로그램과 다르게 보일 수 있어.<br/>최대 50 MB · 암호 없는 HWP·HWPX</div></div></div>}
+      {session?<div className="world" style={{width:layout.width,height:layout.height}}>{layout.items.map((p,i)=>{const visible=p.top<viewport.top+viewport.height+450&&p.top+p.height>viewport.top-450&&p.left<viewport.left+viewport.width+250&&p.left+p.width>viewport.left-250;return <section key={`${session.key}-${i}`} className={`sheet ${selected===i?'selected':''}`} style={p} aria-label={`${i+1}쪽`} onClick={()=>{if(!drag.current?.moved&&!touchMoved.current)setSelected(i);}} onDoubleClick={()=>{if(touchMoved.current)return;const el=stage.current;if(!el)return;const page=session.pages[i];const z=Math.min((el.clientWidth-56)/page.width,(el.clientHeight-56)/page.height)/layout.fit;restoring.current={key:session.key,cols,zoom:z,left:Math.max(0,p.left/layout.scale-28/(layout.fit*z)),top:Math.max(0,p.top/layout.scale-28/(layout.fit*z))};setZoom(Math.max(.2,Math.min(8,z)));}}><PageContent session={session} index={i} visible={visible}/><span className="sheet-num">{i+1}</span></section>;})}</div>:<div className="welcome"><div className="welcome-inner"><div className="file-icon"><FileText size={42}/></div><h1>한글 문서를 펼쳐 봐.</h1><p>HWP·HWPX 파일을 여기에 끌어다 놓고<br/>여러 페이지를 한눈에 읽어 봐.</p><div className="format-tags"><span>HWP</span><span>HWPX</span></div><Button size="lg" onClick={()=>fileInput.current?.click()}><FolderOpen/>파일 선택</Button><div className="privacy-note"><ShieldCheck size={15}/>문서는 이 브라우저 안에서만 처리돼.</div><div className="shortcuts"><span><kbd>휠</kbd>스크롤</span><span><kbd>드래그</kbd>이동</span><span><kbd>Ctrl/⌘ + 휠</kbd>확대</span></div><div className="compat-note">글꼴이나 복잡한 표·수식은 한글 프로그램과 다르게 보일 수 있어.<br/>최대 50 MB · 암호 없는 HWP·HWPX</div></div></div>}
     </div>
     <div className="legal-line">본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다. <a href={`${import.meta.env.BASE_URL}licenses.html`} target="_blank" rel="noreferrer">라이선스·고지</a></div><footer><span className="status" role="status">{session?`${session.pages.length}쪽 · ${saved?'이 브라우저에 저장됨':'문서 열림'}`:'마지막 문서와 보기 위치가 이 브라우저에 저장돼.'}</span><span className="footer-detail">{session?'표·수식·글꼴 배치는 원본과 다를 수 있어.':'서버로 문서를 보내지 않아.'}</span><a href="https://github.com/edwardkim/rhwp" target="_blank" rel="noreferrer">rhwp</a></footer>
     {notice&&<div className="notice" role="alert"><span>{notice}</span><Button variant="ghost" size="icon-sm" aria-label="알림 닫기" onClick={()=>setNotice('')}><X/></Button></div>}{drop&&<div className="drop-overlay">HWP·HWPX 파일을 놓아서 열기</div>}

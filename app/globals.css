@@ -10,3 +10,5 @@
 body{font-family:Arial,'Malgun Gothic','Noto Sans KR',sans-serif}
 
 .legal-line{background:#202730;color:#a8b5c5;padding:7px 26px;font-size:12px;line-height:1.5;border-top:1px solid #343f4d}.legal-line a{color:#9ce0ff;text-decoration:underline;white-space:nowrap}@media(max-width:720px){.legal-line{padding:6px 14px;font-size:12px}}
+
+.stage.ready{touch-action:none}
