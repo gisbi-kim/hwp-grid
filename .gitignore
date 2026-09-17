@@ -1,0 +1,8 @@
+node_modules/
+dist/
+public/engine/
+public/licenses/
+public/THIRD_PARTY_NOTICES.txt
+*.tsbuildinfo
+.env*
+.DS_Store

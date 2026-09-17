@@ -1,0 +1,92 @@
+// 본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
+"use client";
+import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
+import {Button} from '@/components/ui/button';
+import {Input} from '@/components/ui/input';
+import {NativeSelect,NativeSelectOption} from '@/components/ui/native-select';
+import {AlertDialog,AlertDialogTrigger,AlertDialogContent,AlertDialogHeader,AlertDialogTitle,AlertDialogDescription,AlertDialogFooter,AlertDialogCancel,AlertDialogAction} from '@/components/ui/alert-dialog';
+import {FileText,Grid2X2,FolderOpen,ShieldCheck,ChevronLeft,ChevronRight,Minus,Plus,Scan,Maximize,Trash2,LoaderCircle,X} from 'lucide-react';
+import {parseDocument,renderPage,type DocumentSession} from '@/lib/hwp-engine';
+import {readSavedFile,saveFile,clearFile,readView,VIEW_KEY,type SavedView} from '@/lib/local-document';
+import {gridLayout} from '@/lib/grid-layout';
+
+function PageContent({session,index,visible}:{session:DocumentSession;index:number;visible:boolean}){
+  const [svg,setSvg]=useState('');const [error,setError]=useState('');
+  useEffect(()=>{
+    if(!visible){setSvg('');return;}let active=true;
+    const timer=setTimeout(()=>{try{const value=renderPage(session,index);if(active){setSvg(value);setError('');}}catch{if(active)setError('이 페이지를 표시하지 못했어. 원본 한글 문서에서 확인해 줘.');}},0);
+    return()=>{active=false;clearTimeout(timer);};
+  },[session,index,visible]);
+  if(error)return <div className="sheet-status" role="alert">{error}</div>;
+  if(!svg)return <div className="sheet-status">{visible?'페이지 표시 중…':''}</div>;
+  return <div className="page-svg" aria-hidden="true" dangerouslySetInnerHTML={{__html:svg}}/>;
+}
+export default function Home(){
+  const [session,setSession]=useState<DocumentSession|null>(null);
+  const [cols,setCols]=useState(2),[zoom,setZoom]=useState(1),[selected,setSelected]=useState(0);
+  const [viewport,setViewport]=useState({width:1000,height:700,left:0,top:0});
+  const [busy,setBusy]=useState(''),[notice,setNotice]=useState(''),[saved,setSaved]=useState(false),[drop,setDrop]=useState(false),[dragging,setDragging]=useState(false);
+  const [pageInput,setPageInput]=useState('1');
+  const fileInput=useRef<HTMLInputElement>(null),stage=useRef<HTMLDivElement>(null);
+  const current=useRef<DocumentSession|null>(null),loadId=useRef(0),mounted=useRef(true),dragDepth=useRef(0);
+  const restoring=useRef<SavedView|null>(null),anchor=useRef<{x:number;y:number;cx:number;cy:number;oldScale:number}|null>(null);
+  const drag=useRef<{id:number;x:number;y:number;left:number;top:number;moved:boolean}|null>(null);
+  const layout=useMemo(()=>gridLayout(session?.pages||[],cols,viewport.width,zoom),[session,cols,viewport.width,zoom]);
+  const currentPage=session?Math.min(session.pages.length,Math.max(1,Math.floor(Math.max(0,viewport.top+.5)/layout.rowHeight)*cols+1)):1;
+  const viewState=useRef({cols,zoom,scale:layout.scale});viewState.current={cols,zoom,scale:layout.scale};
+  const saveView=useCallback(()=>{const s=current.current,el=stage.current,v=viewState.current;if(!s||!el||restoring.current)return;
+    try{localStorage.setItem(VIEW_KEY,JSON.stringify({key:s.key,cols:v.cols,zoom:v.zoom,left:el.scrollLeft/v.scale,top:el.scrollTop/v.scale}));}catch{setNotice('보기 위치를 저장하지 못했어. 브라우저의 사이트 저장 설정을 확인해 줘.');}
+  },[]);
+  const open=useCallback(async(file:File,restoreKey?:string)=>{
+    saveView();const id=++loadId.current;setBusy(restoreKey?'마지막 문서를 복원하는 중…':'문서를 여는 중…');setNotice('');
+    try{
+      const key=restoreKey||Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join("-");
+      const next=await parseDocument(file,key);
+      if(id!==loadId.current||!mounted.current){next.doc.free();return;}
+      const previous=current.current;current.current=next;
+      const view=restoreKey?readView(key):null;
+      restoring.current=view||{key,cols:2,zoom:1,left:0,top:0};
+      setCols(view?.cols||2);setZoom(view?.zoom||1);setSession(next);setSelected(0);setSaved(!!restoreKey);
+      // Old page effects are disposed by the keyed session before this deferred release.
+      if(previous)setTimeout(()=>previous.doc.free(),0);
+      if(!restoreKey){try{await saveFile({file,key});if(id===loadId.current)setSaved(true);}catch{if(id===loadId.current)setNotice('문서는 열었지만 브라우저에 저장하지 못했어. 새로고침하면 복원되지 않을 수 있어.');}}
+    }catch(error){if(id===loadId.current){const raw=String(error instanceof Error?error.message:error);if(import.meta.env.DEV)console.warn('HWP Grid:',raw);setNotice(/password|encrypt|암호|비밀번호/i.test(raw)?'암호가 걸린 문서는 현재 지원하지 않아. 한글에서 암호를 해제한 사본을 열어 줘.':/선택해|50 MB|빈 파일|페이지 수|크기를|브라우저에서/.test(raw)?raw:'문서를 열지 못했어. 손상되었거나 지원하지 않는 형식일 수 있어. 원본을 한글에서 확인해 줘.');}}
+    finally{if(id===loadId.current&&mounted.current)setBusy('');}
+  },[saveView]);
+  useEffect(()=>{mounted.current=true;const id=loadId.current;
+    readSavedFile().then(value=>{if(mounted.current&&id===loadId.current&&value)void open(value.file,value.key);}).catch(()=>setNotice('브라우저 저장소에 접근하지 못했어. 파일을 직접 열 수는 있어.'));
+    const hide=()=>saveView(),visibility=()=>{if(document.visibilityState==='hidden')saveView();};
+    window.addEventListener('pagehide',hide);document.addEventListener('visibilitychange',visibility);
+    return()=>{mounted.current=false;++loadId.current;window.removeEventListener('pagehide',hide);document.removeEventListener('visibilitychange',visibility);};
+  },[open,saveView]);
+  useEffect(()=>{const el=stage.current;if(!el)return;const observe=()=>setViewport(v=>({...v,width:el.clientWidth,height:el.clientHeight,left:el.scrollLeft,top:el.scrollTop}));const ro=new ResizeObserver(observe);ro.observe(el);observe();return()=>ro.disconnect();},[]);
+  useLayoutEffect(()=>{const el=stage.current;if(!el||!session)return;
+    if(restoring.current){const v=restoring.current;el.scrollLeft=v.left*layout.scale;el.scrollTop=v.top*layout.scale;restoring.current=null;}
+    else if(anchor.current){const a=anchor.current;el.scrollLeft=a.x*layout.scale/a.oldScale-a.cx;el.scrollTop=a.y*layout.scale/a.oldScale-a.cy;anchor.current=null;}
+    setViewport(v=>({...v,left:el.scrollLeft,top:el.scrollTop}));
+  },[session,layout]);
+  useEffect(()=>{setPageInput(String(currentPage));},[currentPage]);
+  useEffect(()=>{if(!session)return;const timer=setTimeout(saveView,180);return()=>clearTimeout(timer);},[session,cols,zoom,viewport.left,viewport.top,saveView]);
+  const changeZoom=useCallback((factor:number,cx?:number,cy?:number)=>{const el=stage.current;if(!el||!current.current)return;const v=viewState.current;const x=cx??el.clientWidth/2,y=cy??el.clientHeight/2;anchor.current={x:el.scrollLeft+x,y:el.scrollTop+y,cx:x,cy:y,oldScale:v.scale};setZoom(z=>Math.max(.2,Math.min(8,z*factor)));},[]);
+  useEffect(()=>{const el=stage.current;if(!el)return;const wheel=(e:WheelEvent)=>{if(!current.current||!(e.ctrlKey||e.metaKey))return;e.preventDefault();const r=el.getBoundingClientRect();changeZoom(Math.exp(-Math.max(-150,Math.min(150,e.deltaY*(e.deltaMode===1?16:1)))*.002),e.clientX-r.left,e.clientY-r.top);};el.addEventListener('wheel',wheel,{passive:false});return()=>el.removeEventListener('wheel',wheel);},[changeZoom]);
+  const go=(page:number)=>{const el=stage.current;if(!el||!session)return;const index=Math.max(0,Math.min(session.pages.length-1,Math.round(page)-1));el.scrollTop=layout.items[index].top-28;el.scrollLeft=0;setSelected(index);setPageInput(String(index+1));};
+  const fit=()=>{anchor.current=null;if(zoom===1){restoring.current=null;if(stage.current)stage.current.scrollLeft=0;return;}const s=current.current;if(s)restoring.current={key:s.key,cols,zoom:1,left:0,top:Math.floor((currentPage-1)/cols)*(Math.max(...s.pages.map(p=>p.height))+24)};setZoom(1);if(zoom===1&&stage.current)stage.current.scrollLeft=0;};
+  const chooseCols=(n:number)=>{if(n===cols)return;anchor.current=null;if(session)restoring.current={key:session.key,cols:n,zoom:1,left:0,top:Math.floor((currentPage-1)/n)*(Math.max(...session.pages.map(p=>p.height))+24)};setCols(n);setZoom(1);};
+  const clear=async()=>{saveView();++loadId.current;setBusy('저장된 문서를 지우는 중…');try{await clearFile();try{localStorage.removeItem(VIEW_KEY);}catch{}const previous=current.current;current.current=null;setSession(null);setSaved(false);setZoom(1);setCols(2);setNotice('');if(previous)setTimeout(()=>previous.doc.free(),0);}catch{setNotice('저장된 문서를 지우지 못했어. 브라우저의 사이트 설정에서 삭제해 줘.');}finally{setBusy('');}};
+  const endDrag=()=>{const d=drag.current;if(d&&stage.current?.hasPointerCapture(d.id))stage.current.releasePointerCapture(d.id);setDragging(false);setTimeout(()=>{drag.current=null;},0);};
+  return <main className="app" onDragEnter={e=>{e.preventDefault();if(e.dataTransfer.types.includes('Files')){dragDepth.current++;setDrop(true);}}} onDragOver={e=>e.preventDefault()} onDragLeave={e=>{e.preventDefault();if(--dragDepth.current<=0){dragDepth.current=0;setDrop(false);}}} onDrop={e=>{e.preventDefault();dragDepth.current=0;setDrop(false);if(e.dataTransfer.files[0])void open(e.dataTransfer.files[0]);}}>
+    <header className="topbar"><div className="brand"><div className="brand-icon"><Grid2X2 size={22}/></div>HWP <span>Grid</span></div><div className="filename" title={session?.name}>{session?.name||'한글 문서를 한눈에, 자유롭게.'}</div><Button onClick={()=>fileInput.current?.click()}><FolderOpen/>문서 열기</Button><input ref={fileInput} type="file" accept=".hwp,.hwpx" aria-label="한글 문서 파일" hidden onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(file)void open(file);}}/></header>
+    <nav className="toolbar" aria-label="문서 보기 설정">
+      <div className="control-group"><label htmlFor="cols">격자</label><NativeSelect id="cols" value={cols} onChange={e=>chooseCols(Number(e.target.value))} aria-label="격자 열 수">{[1,2,3,4,5,6,8].map(n=><NativeSelectOption key={n} value={n}>{n}열</NativeSelectOption>)}</NativeSelect><span className="text-muted-foreground">× {session?Math.ceil(session.pages.length/cols):'—'}행</span></div><span className="divider"/>
+      <div className="control-group"><Button variant="ghost" size="icon" disabled={!session||currentPage<=1} onClick={()=>go(currentPage-cols)} aria-label="이전 행"><ChevronLeft/></Button><Input className="page-input" aria-label="이동할 페이지" type="number" min={1} max={session?.pages.length||1} disabled={!session} value={pageInput} onChange={e=>setPageInput(e.target.value)} onBlur={()=>go(Number(pageInput)||1)} onKeyDown={e=>{if(e.key==='Enter')go(Number(pageInput)||1);}}/><span className="text-muted-foreground">/ {session?.pages.length||'—'}</span><Button variant="ghost" size="icon" disabled={!session||currentPage+cols>session.pages.length} onClick={()=>go(currentPage+cols)} aria-label="다음 행"><ChevronRight/></Button></div>
+      <div className="toolbar-spacer"/><div className="control-group"><Button variant="ghost" size="icon" disabled={!session||zoom<=.2} aria-label="축소" onClick={()=>changeZoom(1/1.25)}><Minus/></Button><output className="zoom-label" aria-label="확대 배율">{Math.round(zoom*100)}%</output><Button variant="ghost" size="icon" disabled={!session||zoom>=8} aria-label="확대" onClick={()=>changeZoom(1.25)}><Plus/></Button><Button variant="secondary" disabled={!session} onClick={fit} title="화면 맞춤 (0)"><Scan/><span className="fit-label">화면 맞춤</span></Button><Button variant="ghost" size="icon" aria-label="전체 화면" onClick={async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen();}catch{setNotice('이 브라우저에서는 전체 화면을 사용할 수 없어.');}}}><Maximize/></Button></div>
+      <span className="divider"/><AlertDialog><AlertDialogTrigger asChild><Button variant="ghost" size="icon" disabled={!session||!!busy} aria-label="저장된 문서 삭제" title="저장된 문서 삭제"><Trash2/></Button></AlertDialogTrigger><AlertDialogContent className="delete-dialog"><AlertDialogHeader><AlertDialogTitle>저장된 문서를 지울까?</AlertDialogTitle><AlertDialogDescription>이 브라우저에 보관한 문서와 보기 위치를 지워. 컴퓨터에 있는 원본 파일은 그대로 남아.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>취소</AlertDialogCancel><AlertDialogAction onClick={()=>void clear()}>지우기</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    </nav>
+    <div ref={stage} tabIndex={0} role="region" aria-label="문서 페이지 격자" className={`stage ${session?'ready':''} ${dragging?'dragging':''}`} onScroll={e=>{const el=e.currentTarget;setViewport(v=>({...v,left:el.scrollLeft,top:el.scrollTop}));}} onKeyDown={e=>{if(e.ctrlKey||e.metaKey||e.altKey)return;if(e.key==='ArrowRight'){e.preventDefault();go(currentPage+cols);}else if(e.key==='ArrowLeft'){e.preventDefault();go(currentPage-cols);}else if(e.key==='0')fit();else if(e.key==='+'||e.key==='=')changeZoom(1.25);else if(e.key==='-')changeZoom(1/1.25);}} onPointerDown={e=>{if(!session||e.button!==0||e.pointerType==='touch')return;const el=e.currentTarget;if(e.nativeEvent.offsetX>=el.clientWidth&&e.target===el)return;el.focus();drag.current={id:e.pointerId,x:e.clientX,y:e.clientY,left:el.scrollLeft,top:el.scrollTop,moved:false};}} onPointerMove={e=>{const d=drag.current;if(!d||d.id!==e.pointerId)return;const dx=e.clientX-d.x,dy=e.clientY-d.y;if(Math.abs(dx)+Math.abs(dy)>4){d.moved=true;setDragging(true);e.currentTarget.setPointerCapture(d.id);e.currentTarget.scrollLeft=d.left-dx;e.currentTarget.scrollTop=d.top-dy;}}} onPointerUp={endDrag} onPointerCancel={endDrag}>
+      {busy&&<div className="loading-bar" role="status"><LoaderCircle className="spin" size={17}/>{busy}</div>}
+      {session?<div className="world" style={{width:layout.width,height:layout.height}}>{layout.items.map((p,i)=>{const visible=p.top<viewport.top+viewport.height+450&&p.top+p.height>viewport.top-450&&p.left<viewport.left+viewport.width+250&&p.left+p.width>viewport.left-250;return <section key={`${session.key}-${i}`} className={`sheet ${selected===i?'selected':''}`} style={p} aria-label={`${i+1}쪽`} onClick={()=>{if(!drag.current?.moved)setSelected(i);}} onDoubleClick={()=>{const el=stage.current;if(!el)return;const page=session.pages[i];const z=Math.min((el.clientWidth-56)/page.width,(el.clientHeight-56)/page.height)/layout.fit;restoring.current={key:session.key,cols,zoom:z,left:Math.max(0,p.left/layout.scale-28/(layout.fit*z)),top:Math.max(0,p.top/layout.scale-28/(layout.fit*z))};setZoom(Math.max(.2,Math.min(8,z)));}}><PageContent session={session} index={i} visible={visible}/><span className="sheet-num">{i+1}</span></section>;})}</div>:<div className="welcome"><div className="welcome-inner"><div className="file-icon"><FileText size={42}/></div><h1>한글 문서를 펼쳐 봐.</h1><p>HWP·HWPX 파일을 여기에 끌어다 놓고<br/>여러 페이지를 한눈에 읽어 봐.</p><div className="format-tags"><span>HWP</span><span>HWPX</span></div><Button size="lg" onClick={()=>fileInput.current?.click()}><FolderOpen/>파일 선택</Button><div className="privacy-note"><ShieldCheck size={15}/>문서는 이 브라우저 안에서만 처리돼.</div><div className="shortcuts"><span><kbd>휠</kbd>스크롤</span><span><kbd>드래그</kbd>이동</span><span><kbd>Ctrl/⌘ + 휠</kbd>확대</span></div><div className="compat-note">글꼴이나 복잡한 표·수식은 한글 프로그램과 다르게 보일 수 있어.<br/>최대 50 MB · 암호 없는 HWP·HWPX</div></div></div>}
+    </div>
+    <div className="legal-line">본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다. <a href={`${import.meta.env.BASE_URL}licenses.html`} target="_blank" rel="noreferrer">라이선스·고지</a></div><footer><span className="status" role="status">{session?`${session.pages.length}쪽 · ${saved?'이 브라우저에 저장됨':'문서 열림'}`:'마지막 문서와 보기 위치가 이 브라우저에 저장돼.'}</span><span className="footer-detail">{session?'표·수식·글꼴 배치는 원본과 다를 수 있어.':'서버로 문서를 보내지 않아.'}</span><a href="https://github.com/edwardkim/rhwp" target="_blank" rel="noreferrer">rhwp</a></footer>
+    {notice&&<div className="notice" role="alert"><span>{notice}</span><Button variant="ghost" size="icon-sm" aria-label="알림 닫기" onClick={()=>setNotice('')}><X/></Button></div>}{drop&&<div className="drop-overlay">HWP·HWPX 파일을 놓아서 열기</div>}
+  </main>;
+}
