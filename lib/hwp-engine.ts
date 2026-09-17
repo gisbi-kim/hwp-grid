@@ -19,7 +19,7 @@ export function engine(){
 }
 export async function parseDocument(file:File,key:string):Promise<DocumentSession>{
   if(!/\.(hwp|hwpx)$/i.test(file.name))throw new Error('HWP 또는 HWPX 파일을 선택해 줘.');
-  if(file.size>50*1024*1024)throw new Error('현재는 50 MB 이하의 문서를 열 수 있어.');
+  if(file.size>200*1024*1024)throw new Error('현재는 200 MB 이하의 문서를 열 수 있어.');
   if(!file.size)throw new Error('빈 파일이야. 다른 문서를 선택해 줘.');
   const [module,buffer]=await Promise.all([engine(),file.arrayBuffer()]);
   // Load Korean fallbacks before the engine measures text, using local font assets only.
