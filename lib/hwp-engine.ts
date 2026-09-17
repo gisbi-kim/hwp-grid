@@ -3,13 +3,16 @@ import DOMPurify from 'dompurify';
 export type PageSize = Readonly<{width:number;height:number}>;
 export type DocumentSession = Readonly<{doc:HwpDocument;key:string;name:string;pages:readonly PageSize[]}>;
 let enginePromise:Promise<typeof import('@rhwp/core')>|null=null;
+let engineMemory:WebAssembly.Memory|null=null;
+export function engineMemoryBytes(){return engineMemory?.buffer.byteLength??0;}
 export function engine(){
   if(!enginePromise)enginePromise=(async()=>{
     const ctx=document.createElement('canvas').getContext('2d');
     if(!ctx)throw new Error('이 브라우저에서 문서 표시 기능을 사용할 수 없어.');
     (globalThis as unknown as {measureTextWidth:(font:string,text:string)=>number}).measureTextWidth=(font,text)=>{ctx.font=font;return ctx.measureText(text).width;};
     const module=await import('@rhwp/core');
-    await module.default({module_or_path:`${import.meta.env.BASE_URL}engine/rhwp-0.8.6.wasm`});
+    const wasm=await module.default({module_or_path:`${import.meta.env.BASE_URL}engine/rhwp-0.8.6.wasm`});
+    engineMemory=wasm.memory;
     return module;
   })().catch(error=>{enginePromise=null;throw error});
   return enginePromise;

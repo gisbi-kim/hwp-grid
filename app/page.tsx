@@ -9,6 +9,7 @@ import {FileText,Grid2X2,FolderOpen,ShieldCheck,ChevronLeft,ChevronRight,Minus,P
 import {parseDocument,renderPage,type DocumentSession} from '@/lib/hwp-engine';
 import {readSavedFile,saveFile,clearFile,readView,VIEW_KEY,type SavedView} from '@/lib/local-document';
 import {gridLayout} from '@/lib/grid-layout';
+import {RuntimeStats} from '@/components/runtime-stats';
 
 function PageContent({session,index,visible}:{session:DocumentSession;index:number;visible:boolean}){
   const [svg,setSvg]=useState('');const [error,setError]=useState('');
@@ -27,6 +28,7 @@ export default function Home(){
   const [viewport,setViewport]=useState({width:1000,height:700,left:0,top:0});
   const [busy,setBusy]=useState(''),[notice,setNotice]=useState(''),[saved,setSaved]=useState(false),[drop,setDrop]=useState(false),[dragging,setDragging]=useState(false);
   const [pageInput,setPageInput]=useState('1');
+  const [documentMs,setDocumentMs]=useState<number|null>(null);
   const fileInput=useRef<HTMLInputElement>(null),stage=useRef<HTMLDivElement>(null);
   const current=useRef<DocumentSession|null>(null),loadId=useRef(0),mounted=useRef(true),dragDepth=useRef(0);
   const restoring=useRef<SavedView|null>(null),anchor=useRef<{x:number;y:number;cx:number;cy:number;oldScale:number}|null>(null);
@@ -39,11 +41,12 @@ export default function Home(){
     try{localStorage.setItem(VIEW_KEY,JSON.stringify({key:s.key,cols:v.cols,zoom:v.zoom,left:el.scrollLeft/v.scale,top:el.scrollTop/v.scale}));}catch{setNotice('보기 위치를 저장하지 못했어. 브라우저의 사이트 저장 설정을 확인해 줘.');}
   },[]);
   const open=useCallback(async(file:File,restoreKey?:string)=>{
-    saveView();const id=++loadId.current;setBusy(restoreKey?'마지막 문서를 복원하는 중…':'문서를 여는 중…');setNotice('');
+    saveView();const started=performance.now();const id=++loadId.current;setDocumentMs(null);setBusy(restoreKey?'마지막 문서를 복원하는 중…':'문서를 여는 중…');setNotice('');
     try{
       const key=restoreKey||Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join("-");
       const next=await parseDocument(file,key);
       if(id!==loadId.current||!mounted.current){next.doc.free();return;}
+      setDocumentMs(performance.now()-started);
       const previous=current.current;current.current=next;
       const view=restoreKey?readView(key):null;
       restoring.current=view||{key,cols:2,zoom:1,left:0,top:0};
@@ -130,7 +133,7 @@ export default function Home(){
   const go=(page:number)=>{const el=stage.current;if(!el||!session)return;const index=Math.max(0,Math.min(session.pages.length-1,Math.round(page)-1));el.scrollTop=layout.items[index].top-28;el.scrollLeft=0;setSelected(index);setPageInput(String(index+1));};
   const fit=()=>{anchor.current=null;if(zoom===1){restoring.current=null;if(stage.current)stage.current.scrollLeft=0;return;}const s=current.current;if(s)restoring.current={key:s.key,cols,zoom:1,left:0,top:Math.floor((currentPage-1)/cols)*(Math.max(...s.pages.map(p=>p.height))+24)};setZoom(1);if(zoom===1&&stage.current)stage.current.scrollLeft=0;};
   const chooseCols=(n:number)=>{if(n===cols)return;anchor.current=null;if(session)restoring.current={key:session.key,cols:n,zoom:1,left:0,top:Math.floor((currentPage-1)/n)*(Math.max(...session.pages.map(p=>p.height))+24)};setCols(n);setZoom(1);};
-  const clear=async()=>{saveView();++loadId.current;setBusy('저장된 문서를 지우는 중…');try{await clearFile();try{localStorage.removeItem(VIEW_KEY);}catch{}const previous=current.current;current.current=null;setSession(null);setSaved(false);setZoom(1);setCols(2);setNotice('');if(previous)setTimeout(()=>previous.doc.free(),0);}catch{setNotice('저장된 문서를 지우지 못했어. 브라우저의 사이트 설정에서 삭제해 줘.');}finally{setBusy('');}};
+  const clear=async()=>{saveView();++loadId.current;setBusy('저장된 문서를 지우는 중…');try{await clearFile();try{localStorage.removeItem(VIEW_KEY);}catch{}const previous=current.current;current.current=null;setDocumentMs(null);setSession(null);setSaved(false);setZoom(1);setCols(2);setNotice('');if(previous)setTimeout(()=>previous.doc.free(),0);}catch{setNotice('저장된 문서를 지우지 못했어. 브라우저의 사이트 설정에서 삭제해 줘.');}finally{setBusy('');}};
   const endDrag=()=>{const d=drag.current;if(d&&stage.current?.hasPointerCapture(d.id))stage.current.releasePointerCapture(d.id);setDragging(false);setTimeout(()=>{drag.current=null;},0);};
   return <main className="app" onDragEnter={e=>{e.preventDefault();if(e.dataTransfer.types.includes('Files')){dragDepth.current++;setDrop(true);}}} onDragOver={e=>e.preventDefault()} onDragLeave={e=>{e.preventDefault();if(--dragDepth.current<=0){dragDepth.current=0;setDrop(false);}}} onDrop={e=>{e.preventDefault();dragDepth.current=0;setDrop(false);if(e.dataTransfer.files[0])void open(e.dataTransfer.files[0]);}}>
     <header className="topbar"><div className="brand"><div className="brand-icon"><Grid2X2 size={22}/></div>HWP <span>Grid</span></div><div className="filename" title={session?.name}>{session?.name||'한글 문서를 한눈에, 자유롭게.'}</div><Button onClick={()=>fileInput.current?.click()}><FolderOpen/>문서 열기</Button><input ref={fileInput} type="file" accept=".hwp,.hwpx" aria-label="한글 문서 파일" hidden onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(file)void open(file);}}/></header>
@@ -144,6 +147,7 @@ export default function Home(){
       {busy&&<div className="loading-bar" role="status"><LoaderCircle className="spin" size={17}/>{busy}</div>}
       {session?<div className="world" style={{width:layout.width,height:layout.height}}>{layout.items.map((p,i)=>{const visible=p.top<viewport.top+viewport.height+450&&p.top+p.height>viewport.top-450&&p.left<viewport.left+viewport.width+250&&p.left+p.width>viewport.left-250;return <section key={`${session.key}-${i}`} className={`sheet ${selected===i?'selected':''}`} style={p} aria-label={`${i+1}쪽`} onClick={()=>{if(!drag.current?.moved&&!touchMoved.current)setSelected(i);}} onDoubleClick={()=>{if(touchMoved.current)return;const el=stage.current;if(!el)return;const page=session.pages[i];const z=Math.min((el.clientWidth-56)/page.width,(el.clientHeight-56)/page.height)/layout.fit;restoring.current={key:session.key,cols,zoom:z,left:Math.max(0,p.left/layout.scale-28/(layout.fit*z)),top:Math.max(0,p.top/layout.scale-28/(layout.fit*z))};setZoom(Math.max(.2,Math.min(8,z)));}}><PageContent session={session} index={i} visible={visible}/><span className="sheet-num">{i+1}</span></section>;})}</div>:<div className="welcome"><div className="welcome-inner"><div className="file-icon"><FileText size={42}/></div><h1>한글 문서를 펼쳐 봐.</h1><p>HWP·HWPX 파일을 여기에 끌어다 놓고<br/>여러 페이지를 한눈에 읽어 봐.</p><div className="format-tags"><span>HWP</span><span>HWPX</span></div><Button size="lg" onClick={()=>fileInput.current?.click()}><FolderOpen/>파일 선택</Button><div className="privacy-note"><ShieldCheck size={15}/>문서는 이 브라우저 안에서만 처리돼.</div><div className="shortcuts"><span><kbd>휠</kbd>스크롤</span><span><kbd>드래그</kbd>이동</span><span><kbd>Ctrl/⌘ + 휠</kbd>확대</span></div><div className="compat-note">글꼴이나 복잡한 표·수식은 한글 프로그램과 다르게 보일 수 있어.<br/>최대 50 MB · 암호 없는 HWP·HWPX</div></div></div>}
     </div>
+    <RuntimeStats documentMs={documentMs}/>
     <div className="legal-line">본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다. <a href={`${import.meta.env.BASE_URL}licenses.html`} target="_blank" rel="noreferrer">라이선스·고지</a></div><footer><span className="status" role="status">{session?`${session.pages.length}쪽 · ${saved?'이 브라우저에 저장됨':'문서 열림'}`:'마지막 문서와 보기 위치가 이 브라우저에 저장돼.'}</span><span className="footer-detail">{session?'표·수식·글꼴 배치는 원본과 다를 수 있어.':'서버로 문서를 보내지 않아.'}</span><a href="https://github.com/edwardkim/rhwp" target="_blank" rel="noreferrer">rhwp</a></footer>
     {notice&&<div className="notice" role="alert"><span>{notice}</span><Button variant="ghost" size="icon-sm" aria-label="알림 닫기" onClick={()=>setNotice('')}><X/></Button></div>}{drop&&<div className="drop-overlay">HWP·HWPX 파일을 놓아서 열기</div>}
   </main>;
