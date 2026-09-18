@@ -1,10 +1,11 @@
-import {useEffect,useState} from 'react';
+import {useEffect,useState,useId} from 'react';
 import {engineMemoryBytes} from '@/lib/hwp-engine';
 
 type HeapPerformance=Performance&{memory?:{usedJSHeapSize?:number}};
 const mb=(bytes:number)=>(bytes/1_000_000).toFixed(1);
 
 export function RuntimeStats({documentMs}:{documentMs:number|null}){
+  const helpId=useId();
   const [loadMs,setLoadMs]=useState<number|null>(null);
   const [memory,setMemory]=useState<{js:number|null;engine:number}>({js:null,engine:0});
   useEffect(()=>{
@@ -32,6 +33,6 @@ export function RuntimeStats({documentMs}:{documentMs:number|null}){
     {documentMs!==null&&<span data-stat="document">문서 준비 {(documentMs/1000).toFixed(2)}초</span>}
     <span data-stat="memory">메모리(JS) {memory.js===null?'측정 미지원':`약 ${mb(memory.js)} MB`}</span>
     <span data-stat="engine">엔진 할당 {mb(memory.engine)} MB</span>
-    <button type="button" popoverTarget="runtime-help">측정 안내</button><div id="runtime-help" className="runtime-help" popover="auto"><p>최초 로딩은 이번 접속 시작부터 사이트 로드 완료까지입니다. 문서 준비는 파일 읽기·엔진 초기화·문서 분석 시간이며, 페이지 그림·글꼴 표시와 저장 시간은 제외합니다. 메모리는 2초마다 갱신합니다. JS는 화면 측의 추정 사용량(worker JS 힙 제외), 엔진 할당은 백그라운드 문서 엔진이 확보한 메모리 공간입니다. 두 수치는 전체 탭 메모리가 아니며 합산하지 않습니다. MB는 1,000,000바이트입니다.</p><button type="button" popoverTarget="runtime-help" popoverTargetAction="hide">닫기</button></div>
+    <button type="button" popoverTarget={helpId}>측정 안내</button><div id={helpId} className="runtime-help" popover="auto"><p>최초 로딩은 이번 접속 시작부터 사이트 로드 완료까지입니다. 문서 준비는 파일 읽기·엔진 초기화·문서 분석 시간이며, 페이지 그림·글꼴 표시와 저장 시간은 제외합니다. 메모리는 2초마다 갱신합니다. JS는 화면 측의 추정 사용량(worker JS 힙 제외), 엔진 할당은 열린 모든 문서 엔진이 확보한 메모리 공간의 합계입니다. 두 수치는 전체 탭 메모리가 아니며 합산하지 않습니다. MB는 1,000,000바이트입니다.</p><button type="button" popoverTarget={helpId} popoverTargetAction="hide">닫기</button></div>
   </div>;
 }
