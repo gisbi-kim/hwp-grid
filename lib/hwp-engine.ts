@@ -22,8 +22,8 @@ export async function parseDocument(file:File,key:string):Promise<DocumentSessio
   if(file.size>200*1024*1024)throw new Error('현재는 200 MB 이하의 문서를 열 수 있어.');
   if(!file.size)throw new Error('빈 파일이야. 다른 문서를 선택해 줘.');
   const [module,buffer]=await Promise.all([engine(),file.arrayBuffer()]);
-  // Load Korean fallbacks before the engine measures text, using local font assets only.
-  await Promise.all(Array.from(document.fonts).filter(face=>/Noto (Sans|Serif) KR/.test(face.family)).map(face=>face.load()));
+  // SVG text uses CSS unicode-range font loading: fetch only glyph subsets needed
+  // by visible pages, instead of blocking parsing on every bundled font subset.
   const doc=new module.HwpDocument(new Uint8Array(buffer));
   try{
     const count=doc.pageCount();
