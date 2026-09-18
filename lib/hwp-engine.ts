@@ -36,11 +36,16 @@ export async function parseDocument(file:File,key:string):Promise<DocumentSessio
     return {doc,key,name:file.name,pages};
   }catch(error){doc.free();throw error;}
 }
+const pageCaches=new WeakMap<DocumentSession,Map<number,string>>();
+const MAX_CACHE_BYTES=24*1024*1024,MAX_CACHE_PAGES=16;
 /** Sanitized, isolated IDs; no links or remote resources from an opened document. */
 export function renderPage(session:DocumentSession,index:number):string{
-  const clean=DOMPurify.sanitize(session.doc.renderPageSvg(index),{USE_PROFILES:{svg:true,svgFilters:true},FORBID_TAGS:['a','style','foreignObject','script','animate','set'],FORBID_ATTR:['style']});
-  const tree=new DOMParser().parseFromString(clean,'image/svg+xml');
-  if(tree.querySelector('parsererror'))throw new Error('페이지 그림을 해석하지 못했어.');
+  let cache=pageCaches.get(session);if(!cache){cache=new Map();pageCaches.set(session,cache);}
+  const cached=cache.get(index);
+  if(cached!==undefined){cache.delete(index);cache.set(index,cached);return cached;}
+  const tree=DOMPurify.sanitize(session.doc.renderPageSvg(index),{USE_PROFILES:{svg:true,svgFilters:true},FORBID_TAGS:['a','style','foreignObject','script','animate','set'],FORBID_ATTR:['style'],RETURN_DOM_FRAGMENT:true});
+  const svg=tree.firstElementChild;
+  if(!svg||svg.localName!=='svg')throw new Error('페이지 그림을 해석하지 못했어.');
   const prefix=`page-${session.key}-${index}-`;
   for(const el of tree.querySelectorAll('*')){
     if(el.id)el.id=prefix+el.id;
@@ -54,5 +59,12 @@ export function renderPage(session:DocumentSession,index:number):string{
       }
     }
   }
-  return new XMLSerializer().serializeToString(tree.documentElement);
+  const result=new XMLSerializer().serializeToString(svg);
+  // Bound cached SVG text, which may contain large embedded images.
+  if(result.length*2<=MAX_CACHE_BYTES){
+    cache.set(index,result);
+    let bytes=Array.from(cache.values()).reduce((sum,value)=>sum+value.length*2,0);
+    while(cache.size>MAX_CACHE_PAGES||bytes>MAX_CACHE_BYTES){const oldest=cache.keys().next().value!;bytes-=cache.get(oldest)!.length*2;cache.delete(oldest);}
+  }
+  return result;
 }

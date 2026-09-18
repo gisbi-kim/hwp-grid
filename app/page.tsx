@@ -1,6 +1,6 @@
 // 본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
 "use client";
-import {useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
+import {memo,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
 import {NativeSelect,NativeSelectOption} from '@/components/ui/native-select';
@@ -10,18 +10,19 @@ import {parseDocument,renderPage,type DocumentSession} from '@/lib/hwp-engine';
 import {readSavedFile,saveFile,clearFile,readView,VIEW_KEY,type SavedView} from '@/lib/local-document';
 import {gridLayout,pageAtScroll} from '@/lib/grid-layout';
 import {RuntimeStats} from '@/components/runtime-stats';
+import {queuePageRender} from '@/lib/page-render-queue';
 
-function PageContent({session,index,visible}:{session:DocumentSession;index:number;visible:boolean}){
+const PageContent=memo(function PageContent({session,index,visible,priority}:{session:DocumentSession;index:number;visible:boolean;priority:boolean}){
   const [svg,setSvg]=useState('');const [error,setError]=useState('');
   useEffect(()=>{
     if(!visible){setSvg('');return;}let active=true;
-    const timer=setTimeout(()=>{try{const value=renderPage(session,index);if(active){setSvg(value);setError('');}}catch{if(active)setError('이 페이지를 표시하지 못했어. 원본 한글 문서에서 확인해 줘.');}},0);
-    return()=>{active=false;clearTimeout(timer);};
-  },[session,index,visible]);
+    const cancel=queuePageRender(()=>{try{const value=renderPage(session,index);if(active){setSvg(value);setError('');}}catch{if(active)setError('이 페이지를 표시하지 못했어. 원본 한글 문서에서 확인해 줘.');}},priority);
+    return()=>{active=false;cancel();};
+  },[session,index,visible,priority]);
   if(error)return <div className="sheet-status" role="alert">{error}</div>;
   if(!svg)return <div className="sheet-status">{visible?'페이지 표시 중…':''}</div>;
   return <div className="page-svg" aria-hidden="true" dangerouslySetInnerHTML={{__html:svg}}/>;
-}
+});
 export default function Home(){
   const [session,setSession]=useState<DocumentSession|null>(null);
   const [cols,setCols]=useState(2),[zoom,setZoom]=useState(1),[selected,setSelected]=useState(0);
@@ -150,7 +151,7 @@ export default function Home(){
     </nav>
     <div ref={stage} tabIndex={0} role="region" aria-label="문서 페이지 격자" className={`stage ${session?'ready':''} ${dragging?'dragging':''}`} onScroll={e=>{const el=e.currentTarget;setViewport(v=>({...v,left:el.scrollLeft,top:el.scrollTop}));}} onKeyDown={e=>{if(e.ctrlKey||e.metaKey||e.altKey)return;if(e.key==='ArrowRight'){e.preventDefault();go(currentPage+cols);}else if(e.key==='ArrowLeft'){e.preventDefault();go(currentPage-cols);}else if(e.key==='0')fit();else if(e.key==='+'||e.key==='=')changeZoom(1.25);else if(e.key==='-')changeZoom(1/1.25);}} onPointerDown={e=>{if(!session||e.button!==0||e.pointerType==='touch')return;const el=e.currentTarget;if(e.nativeEvent.offsetX>=el.clientWidth&&e.target===el)return;touchMoved.current=false;el.focus();drag.current={id:e.pointerId,x:e.clientX,y:e.clientY,left:el.scrollLeft,top:el.scrollTop,moved:false};}} onPointerMove={e=>{const d=drag.current;if(!d||d.id!==e.pointerId)return;const dx=e.clientX-d.x,dy=e.clientY-d.y;if(Math.abs(dx)+Math.abs(dy)>4){d.moved=true;setDragging(true);e.currentTarget.setPointerCapture(d.id);e.currentTarget.scrollLeft=d.left-dx;e.currentTarget.scrollTop=d.top-dy;}}} onPointerUp={endDrag} onPointerCancel={endDrag}>
       {busy&&<div className="loading-bar" role="status"><LoaderCircle className="spin" size={17}/>{busy}</div>}
-      {session?<div className="world" style={{width:layout.width,height:layout.height}}>{layout.items.map((p,i)=>{const visible=p.top<viewport.top+viewport.height+450&&p.top+p.height>viewport.top-450&&p.left<viewport.left+viewport.width+250&&p.left+p.width>viewport.left-250;return <section key={`${session.key}-${i}`} className={`sheet ${selected===i?'selected':''}`} style={p} aria-label={`${i+1}쪽`} onClick={()=>{if(!drag.current?.moved&&!touchMoved.current)setSelected(i);}} onDoubleClick={()=>{if(touchMoved.current)return;const el=stage.current;if(!el)return;const z=Math.max(.2,Math.min(8,zoom*Math.min((el.clientWidth-56)/p.width,(el.clientHeight-56)/p.height)));const next=gridLayout(session.pages,cols,el.clientWidth,z);restoring.current={key:session.key,cols,zoom:z,left:Math.max(0,next.items[i].left-28)/next.scale,top:Math.max(0,next.items[i].top-28)/next.scale};setZoom(z);}}><PageContent session={session} index={i} visible={visible}/><span className="sheet-num">{i+1}</span></section>;})}</div>:<div className="welcome"><div className="welcome-inner"><div className="file-icon"><FileText size={42}/></div><h1>한글 문서를 펼쳐 봐.</h1><p>HWP·HWPX 파일을 여기에 끌어다 놓고<br/>여러 페이지를 한눈에 읽어 봐.</p><div className="format-tags"><span>HWP</span><span>HWPX</span></div><Button size="lg" onClick={()=>fileInput.current?.click()}><FolderOpen/>파일 선택</Button><div className="privacy-note"><ShieldCheck size={15}/>문서는 이 브라우저 안에서만 처리돼.</div><div className="shortcuts"><span><kbd>휠</kbd>스크롤</span><span><kbd>드래그</kbd>이동</span><span><kbd>Ctrl/⌘ + 휠</kbd>확대</span></div><div className="compat-note">글꼴이나 복잡한 표·수식은 한글 프로그램과 다르게 보일 수 있어.<br/>최대 200 MB · 암호 없는 HWP·HWPX</div></div></div>}
+      {session?<div className="world" style={{width:layout.width,height:layout.height}}>{layout.items.map((p,i)=>{const visible=p.top<viewport.top+viewport.height+450&&p.top+p.height>viewport.top-450&&p.left<viewport.left+viewport.width+250&&p.left+p.width>viewport.left-250;return <section key={`${session.key}-${i}`} className={`sheet ${selected===i?'selected':''}`} style={p} aria-label={`${i+1}쪽`} onClick={()=>{if(!drag.current?.moved&&!touchMoved.current)setSelected(i);}} onDoubleClick={()=>{if(touchMoved.current)return;const el=stage.current;if(!el)return;const z=Math.max(.2,Math.min(8,zoom*Math.min((el.clientWidth-56)/p.width,(el.clientHeight-56)/p.height)));const next=gridLayout(session.pages,cols,el.clientWidth,z);restoring.current={key:session.key,cols,zoom:z,left:Math.max(0,next.items[i].left-28)/next.scale,top:Math.max(0,next.items[i].top-28)/next.scale};setZoom(z);}}><PageContent session={session} index={i} visible={visible} priority={p.top<viewport.top+viewport.height&&p.top+p.height>viewport.top&&p.left<viewport.left+viewport.width&&p.left+p.width>viewport.left}/><span className="sheet-num">{i+1}</span></section>;})}</div>:<div className="welcome"><div className="welcome-inner"><div className="file-icon"><FileText size={42}/></div><h1>한글 문서를 펼쳐 봐.</h1><p>HWP·HWPX 파일을 여기에 끌어다 놓고<br/>여러 페이지를 한눈에 읽어 봐.</p><div className="format-tags"><span>HWP</span><span>HWPX</span></div><Button size="lg" onClick={()=>fileInput.current?.click()}><FolderOpen/>파일 선택</Button><div className="privacy-note"><ShieldCheck size={15}/>문서는 이 브라우저 안에서만 처리돼.</div><div className="shortcuts"><span><kbd>휠</kbd>스크롤</span><span><kbd>드래그</kbd>이동</span><span><kbd>Ctrl/⌘ + 휠</kbd>확대</span></div><div className="compat-note">글꼴이나 복잡한 표·수식은 한글 프로그램과 다르게 보일 수 있어.<br/>최대 200 MB · 암호 없는 HWP·HWPX</div></div></div>}
     </div>
     <RuntimeStats documentMs={documentMs}/>
     <div className="legal-line">본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다. <a href={`${import.meta.env.BASE_URL}licenses.html`} target="_blank" rel="noreferrer">라이선스·고지</a></div><footer><span className="status" role="status">{session?`${session.pages.length}쪽 · ${saved?'이 브라우저에 저장됨':'문서 열림'}`:'마지막 문서와 보기 위치가 이 브라우저에 저장돼.'}</span><span className="footer-detail">{session?'표·수식·글꼴 배치는 원본과 다를 수 있어.':'서버로 문서를 보내지 않아.'}</span><a href="https://github.com/edwardkim/rhwp" target="_blank" rel="noreferrer">rhwp</a></footer>
