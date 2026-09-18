@@ -28,6 +28,8 @@ export default function Home(){
   const [cols,setCols]=useState(2),[zoom,setZoom]=useState(1),[selected,setSelected]=useState(0);
   const [viewport,setViewport]=useState({width:1000,height:700,left:0,top:0});
   const [busy,setBusy]=useState(''),[notice,setNotice]=useState(''),[saved,setSaved]=useState(false),[drop,setDrop]=useState(false),[dragging,setDragging]=useState(false);
+  const [passwordRequest,setPasswordRequest]=useState<{name:string;retry:boolean;finish:(value:string|null)=>void}|null>(null);
+  const passwordInput=useRef<HTMLInputElement>(null);
   const [pageInput,setPageInput]=useState('1');
   const pageInputDirty=useRef(false);
   const [documentMs,setDocumentMs]=useState<number|null>(null);
@@ -47,9 +49,25 @@ export default function Home(){
     saveView();opening.current?.abort();const controller=new AbortController();opening.current=controller;const started=performance.now();const id=++loadId.current;setDocumentMs(null);setBusy(restoreKey?'마지막 문서를 복원하는 중…':'문서를 여는 중…');setNotice('');
     try{
       const key=restoreKey||Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join("-");
-      const next=await parseDocument(file,key,controller.signal);
+      let passwordWaitMs=0;
+      const next=await parseDocument(file,key,controller.signal,async retry=>{
+        const waiting=performance.now();
+        const value=await new Promise<string|null>(resolve=>{
+          const finish=(value:string|null)=>{
+            controller.signal.removeEventListener('abort',cancel);
+            if(passwordInput.current)passwordInput.current.value='';
+            setPasswordRequest(null);resolve(value);
+          };
+          const cancel=()=>finish(null);
+          if(controller.signal.aborted){resolve(null);return;}
+          controller.signal.addEventListener('abort',cancel,{once:true});
+          setPasswordRequest({name:file.name,retry,finish});
+        });
+        passwordWaitMs+=performance.now()-waiting;
+        return value;
+      });
       if(id!==loadId.current||!mounted.current){next.doc.free();return;}
-      setDocumentMs(performance.now()-started);
+      setDocumentMs(performance.now()-started-passwordWaitMs);
       const previous=current.current;current.current=next;
       const view=restoreKey?readView(key):null;
       restoring.current=view||{key,cols:2,zoom:1,left:0,top:0};
@@ -57,7 +75,7 @@ export default function Home(){
       // Old page effects are disposed by the keyed session before this deferred release.
       if(previous)setTimeout(()=>previous.doc.free(),0);
       if(!restoreKey){try{await saveFile({file,key});if(id===loadId.current)setSaved(true);}catch{if(id===loadId.current)setNotice('문서는 열었으나 브라우저에 저장하지 못했습니다. 새로고침하면 복원되지 않을 수 있습니다.');}}
-    }catch(error){if(id===loadId.current){const raw=String(error instanceof Error?error.message:error);if(import.meta.env.DEV)console.warn('HWP Grid:',raw);setNotice(/password|encrypt|암호|비밀번호/i.test(raw)?'암호가 설정된 문서는 현재 지원하지 않습니다. 한글에서 암호를 해제한 사본을 열어 주세요.':/선택해|1 GB|빈 파일|페이지 수|크기를|브라우저에서/.test(raw)?raw:'문서를 열지 못했습니다. 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다. 원본 문서를 한글에서 확인해 주세요.');}}
+    }catch(error){if(id===loadId.current&&!(error instanceof DOMException&&error.name==='AbortError')){const raw=String(error instanceof Error?error.message:error);if(import.meta.env.DEV)console.warn('HWP Grid:',raw);setNotice(/password|encrypt|암호|비밀번호/i.test(raw)?'이 문서의 암호화 방식은 지원하지 않거나 파일이 손상되었을 수 있습니다. 원본 문서를 한글에서 확인해 주세요.':/선택해|1 GB|빈 파일|페이지 수|크기를|브라우저에서/.test(raw)?raw:'문서를 열지 못했습니다. 파일이 손상되었거나 지원하지 않는 형식일 수 있습니다. 원본 문서를 한글에서 확인해 주세요.');}}
     finally{if(id===loadId.current&&mounted.current)setBusy('');}
   },[saveView]);
   useEffect(()=>{mounted.current=true;const id=loadId.current;
@@ -153,9 +171,20 @@ export default function Home(){
     </nav>
     <div ref={stage} tabIndex={0} role="region" aria-label="문서 페이지 격자" className={`stage ${session?'ready':''} ${dragging?'dragging':''}`} onScroll={e=>{const el=e.currentTarget;setViewport(v=>({...v,left:el.scrollLeft,top:el.scrollTop}));}} onKeyDown={e=>{if(e.ctrlKey||e.metaKey||e.altKey)return;if(e.key==='ArrowRight'){e.preventDefault();go(currentPage+cols);}else if(e.key==='ArrowLeft'){e.preventDefault();go(currentPage-cols);}else if(e.key==='0')fit();else if(e.key==='+'||e.key==='=')changeZoom(1.25);else if(e.key==='-')changeZoom(1/1.25);}} onPointerDown={e=>{if(!session||e.button!==0||e.pointerType==='touch')return;const el=e.currentTarget;if(e.nativeEvent.offsetX>=el.clientWidth&&e.target===el)return;e.preventDefault();touchMoved.current=false;el.focus({preventScroll:true});drag.current={id:e.pointerId,x:e.clientX,y:e.clientY,left:el.scrollLeft,top:el.scrollTop,moved:false};}} onPointerMove={e=>{const d=drag.current;if(!d||d.id!==e.pointerId)return;const dx=e.clientX-d.x,dy=e.clientY-d.y;if(Math.abs(dx)+Math.abs(dy)>4){d.moved=true;setDragging(true);e.currentTarget.setPointerCapture(d.id);e.currentTarget.scrollLeft=d.left-dx;e.currentTarget.scrollTop=d.top-dy;}}} onPointerUp={endDrag} onPointerCancel={endDrag}>
       {busy&&<div className="loading-bar" role="status"><LoaderCircle className="spin" size={17}/>{busy}</div>}
-      {session?<div className="world" style={{width:layout.width,height:layout.height}}>{layout.items.map((p,i)=>{const visible=p.top<viewport.top+viewport.height+450&&p.top+p.height>viewport.top-450&&p.left<viewport.left+viewport.width+250&&p.left+p.width>viewport.left-250;return <section key={`${session.key}-${i}`} className={`sheet ${selected===i?'selected':''}`} style={p} aria-label={`${i+1}쪽`} onClick={()=>{if(!drag.current?.moved&&!touchMoved.current)setSelected(i);}} onDoubleClick={()=>{if(touchMoved.current)return;const el=stage.current;if(!el)return;const z=Math.max(.2,Math.min(8,zoom*Math.min((el.clientWidth-56)/p.width,(el.clientHeight-56)/p.height)));const next=gridLayout(session.pages,cols,el.clientWidth,z);restoring.current={key:session.key,cols,zoom:z,left:Math.max(0,next.items[i].left-28)/next.scale,top:Math.max(0,next.items[i].top-28)/next.scale};setZoom(z);}}><PageContent session={session} index={i} visible={visible} priority={p.top<viewport.top+viewport.height&&p.top+p.height>viewport.top&&p.left<viewport.left+viewport.width&&p.left+p.width>viewport.left}/><span className="sheet-num">{i+1}</span></section>;})}</div>:<div className="welcome"><div className="welcome-inner"><div className="file-icon"><FileText size={42}/></div><h1>한글 문서를 한눈에</h1><p>HWP·HWPX 파일을 이곳에 끌어다 놓으면<br/>여러 페이지를 한눈에 볼 수 있습니다.</p><div className="format-tags"><span>HWP</span><span>HWPX</span></div><Button size="lg" onClick={()=>fileInput.current?.click()}><FolderOpen/>파일 선택</Button><div className="privacy-note"><ShieldCheck size={15}/>문서는 이 브라우저 안에서만 처리됩니다.</div><div className="shortcuts"><span><kbd>휠</kbd>스크롤</span><span><kbd>드래그</kbd>이동</span><span><kbd>Ctrl/⌘ + 휠</kbd>확대</span></div><div className="compat-note">글꼴이나 복잡한 표·수식은 한글 프로그램과 다르게 표시될 수 있습니다.<br/>최대 1 GB · 암호 없는 HWP·HWPX</div></div></div>}
+      {session?<div className="world" style={{width:layout.width,height:layout.height}}>{layout.items.map((p,i)=>{const visible=p.top<viewport.top+viewport.height+450&&p.top+p.height>viewport.top-450&&p.left<viewport.left+viewport.width+250&&p.left+p.width>viewport.left-250;return <section key={`${session.key}-${i}`} className={`sheet ${selected===i?'selected':''}`} style={p} aria-label={`${i+1}쪽`} onClick={()=>{if(!drag.current?.moved&&!touchMoved.current)setSelected(i);}} onDoubleClick={()=>{if(touchMoved.current)return;const el=stage.current;if(!el)return;const z=Math.max(.2,Math.min(8,zoom*Math.min((el.clientWidth-56)/p.width,(el.clientHeight-56)/p.height)));const next=gridLayout(session.pages,cols,el.clientWidth,z);restoring.current={key:session.key,cols,zoom:z,left:Math.max(0,next.items[i].left-28)/next.scale,top:Math.max(0,next.items[i].top-28)/next.scale};setZoom(z);}}><PageContent session={session} index={i} visible={visible} priority={p.top<viewport.top+viewport.height&&p.top+p.height>viewport.top&&p.left<viewport.left+viewport.width&&p.left+p.width>viewport.left}/><span className="sheet-num">{i+1}</span></section>;})}</div>:<div className="welcome"><div className="welcome-inner"><div className="file-icon"><FileText size={42}/></div><h1>한글 문서를 한눈에</h1><p>HWP·HWPX 파일을 이곳에 끌어다 놓으면<br/>여러 페이지를 한눈에 볼 수 있습니다.</p><div className="format-tags"><span>HWP</span><span>HWPX</span></div><Button size="lg" onClick={()=>fileInput.current?.click()}><FolderOpen/>파일 선택</Button><div className="privacy-note"><ShieldCheck size={15}/>문서는 이 브라우저 안에서만 처리됩니다.</div><div className="shortcuts"><span><kbd>휠</kbd>스크롤</span><span><kbd>드래그</kbd>이동</span><span><kbd>Ctrl/⌘ + 휠</kbd>확대</span></div><div className="compat-note">글꼴이나 복잡한 표·수식은 한글 프로그램과 다르게 표시될 수 있습니다.<br/>최대 1 GB · HWP·HWPX · 암호 입력 지원</div></div></div>}
     </div>
     <footer className="statusbar" aria-label="문서 상태 및 성능 정보"><RuntimeStats documentMs={documentMs}/><span className="legal-line">본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다. <a href={`${import.meta.env.BASE_URL}licenses.html`} target="_blank" rel="noreferrer">라이선스·고지</a></span><div className="statusbar-right"><span className="status" role="status">{session?`${session.pages.length}쪽 · ${saved?'이 브라우저에 저장됨':'문서 열림'}`:'마지막 문서·보기 위치는 이 브라우저에 저장됨'}</span><span className="footer-detail">{session?'표·수식·글꼴 배치는 원본과 다를 수 있음':'문서는 서버로 전송되지 않음'}</span><a href="https://github.com/edwardkim/rhwp" target="_blank" rel="noreferrer">rhwp</a></div></footer>
     {notice&&<div className="notice" role="alert"><span>{notice}</span><Button variant="ghost" size="icon-sm" aria-label="알림 닫기" onClick={()=>setNotice('')}><X/></Button></div>}{drop&&<div className="drop-overlay">HWP·HWPX 파일을 놓아서 열기</div>}
+    <AlertDialog open={!!passwordRequest} onOpenChange={value=>{if(!value)passwordRequest?.finish(null);}}>
+      <AlertDialogContent onOpenAutoFocus={e=>{e.preventDefault();passwordInput.current?.focus();}}>
+        <AlertDialogHeader><AlertDialogTitle>문서 암호를 입력해 주세요</AlertDialogTitle><AlertDialogDescription>{passwordRequest?.name}<br/>암호는 이 문서를 여는 데만 사용하며 저장하거나 서버로 전송하지 않습니다.</AlertDialogDescription></AlertDialogHeader>
+        <form onSubmit={e=>{e.preventDefault();const value=passwordInput.current?.value;if(value)passwordRequest?.finish(value);}}>
+          <label htmlFor="document-password">문서 암호</label>
+          <Input ref={passwordInput} id="document-password" type="password" autoComplete="off" required aria-describedby={passwordRequest?.retry?'password-error':undefined}/>
+          {passwordRequest?.retry&&<p id="password-error" role="alert">암호가 일치하지 않거나 파일이 손상되었습니다. 암호를 확인한 후 다시 입력해 주세요.</p>}
+          <AlertDialogFooter className="mt-4"><Button type="button" variant="outline" onClick={()=>passwordRequest?.finish(null)}>취소</Button><Button type="submit">문서 열기</Button></AlertDialogFooter>
+        </form>
+      </AlertDialogContent>
+    </AlertDialog>
   </main>;
 }

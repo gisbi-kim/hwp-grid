@@ -4,7 +4,7 @@ type RemoteDocument={renderPageSvg:(index:number)=>Promise<string>;free:()=>void
 export type DocumentSession=Readonly<{doc:RemoteDocument;key:string;name:string;pages:readonly PageSize[]}>;
 const workers=new Map<Worker,number>();
 export function engineMemoryBytes(){return Array.from(workers.values()).reduce((a,b)=>a+b,0);}
-export async function parseDocument(file:File,key:string,signal?:AbortSignal):Promise<DocumentSession>{
+export async function parseDocument(file:File,key:string,signal?:AbortSignal,askPassword?:(retry:boolean)=>Promise<string|null>):Promise<DocumentSession>{
   if(!/\.(hwp|hwpx)$/i.test(file.name))throw new Error('HWP 또는 HWPX 파일을 선택해 주세요.');
   if(file.size>1024*1024*1024)throw new Error('1 GB 이하의 문서만 열 수 있습니다.');
   if(!file.size)throw new Error('빈 파일입니다. 다른 문서를 선택해 주세요.');
@@ -31,7 +31,19 @@ export async function parseDocument(file:File,key:string,signal?:AbortSignal):Pr
     try{worker.postMessage({id:next,kind,...extra});}catch(error){pending.delete(next);reject(error);}
   });
   try{
-    const pages=await request('open',{file,url:new URL(`${import.meta.env.BASE_URL}engine/rhwp-0.8.6.wasm`,location.href).href}) as PageSize[];
+    let pages:PageSize[],password:string|undefined;
+    for(;;){
+      try{pages=await request('open',{file,password,url:new URL(`${import.meta.env.BASE_URL}engine/rhwp-0.8.6.wasm`,location.href).href}) as PageSize[];password=undefined;break;}
+      catch(error){
+        const message=String(error instanceof Error?error.message:error);
+        if(!askPassword||!/비밀번호가 필요한|비밀번호가 일치하지 않/.test(message))throw error;
+        const retry=password!==undefined;password=undefined;
+        const entered=await askPassword(retry);
+        signal?.throwIfAborted();
+        if(entered===null)throw new DOMException('문서 열기를 취소했습니다.','AbortError');
+        password=entered;
+      }
+    }
     const doc:RemoteDocument={free,renderPageSvg:(index)=>request('render',{index}) as Promise<string>};
     return {doc,key,name:file.name,pages};
   }catch(error){free();throw error;}finally{signal?.removeEventListener('abort',free);}
