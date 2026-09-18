@@ -1,49 +1,49 @@
-import type { HwpDocument } from '@rhwp/core';
 import DOMPurify from 'dompurify';
-export type PageSize = Readonly<{width:number;height:number}>;
-export type DocumentSession = Readonly<{doc:HwpDocument;key:string;name:string;pages:readonly PageSize[]}>;
-let enginePromise:Promise<typeof import('@rhwp/core')>|null=null;
-let engineMemory:WebAssembly.Memory|null=null;
-export function engineMemoryBytes(){return engineMemory?.buffer.byteLength??0;}
-export function engine(){
-  if(!enginePromise)enginePromise=(async()=>{
-    const ctx=document.createElement('canvas').getContext('2d');
-    if(!ctx)throw new Error('이 브라우저에서 문서 표시 기능을 사용할 수 없어.');
-    (globalThis as unknown as {measureTextWidth:(font:string,text:string)=>number}).measureTextWidth=(font,text)=>{ctx.font=font;return ctx.measureText(text).width;};
-    const module=await import('@rhwp/core');
-    const wasm=await module.default({module_or_path:`${import.meta.env.BASE_URL}engine/rhwp-0.8.6.wasm`});
-    engineMemory=wasm.memory;
-    return module;
-  })().catch(error=>{enginePromise=null;throw error});
-  return enginePromise;
-}
-export async function parseDocument(file:File,key:string):Promise<DocumentSession>{
+export type PageSize=Readonly<{width:number;height:number}>;
+type RemoteDocument={renderPageSvg:(index:number)=>Promise<string>;free:()=>void};
+export type DocumentSession=Readonly<{doc:RemoteDocument;key:string;name:string;pages:readonly PageSize[]}>;
+const workers=new Map<Worker,number>();
+export function engineMemoryBytes(){return Array.from(workers.values()).reduce((a,b)=>a+b,0);}
+export async function parseDocument(file:File,key:string,signal?:AbortSignal):Promise<DocumentSession>{
   if(!/\.(hwp|hwpx)$/i.test(file.name))throw new Error('HWP 또는 HWPX 파일을 선택해 줘.');
   if(file.size>1024*1024*1024)throw new Error('현재는 1 GB 이하의 문서를 열 수 있어.');
   if(!file.size)throw new Error('빈 파일이야. 다른 문서를 선택해 줘.');
-  const [module,buffer]=await Promise.all([engine(),file.arrayBuffer()]);
-  // SVG text uses CSS unicode-range font loading: fetch only glyph subsets needed
-  // by visible pages, instead of blocking parsing on every bundled font subset.
-  const doc=new module.HwpDocument(new Uint8Array(buffer));
+  signal?.throwIfAborted();
+  const worker=new Worker(new URL('./hwp-worker.ts',import.meta.url),{type:'module'});
+  workers.set(worker,0);
+  const pending=new Map<number,{resolve:(value:unknown)=>void;reject:(error:Error)=>void}>();
+  let id=0,closed=false;
+  const free=()=>{
+    if(closed)return;closed=true;worker.terminate();workers.delete(worker);
+    for(const request of pending.values())request.reject(new Error('문서가 닫혔어.'));
+    pending.clear();
+  };
+  worker.onmessage=({data})=>{
+    if(closed)return;workers.set(worker,data.bytes);
+    const request=pending.get(data.id);if(!request)return;pending.delete(data.id);
+    if(data.error)request.reject(new Error(data.error));else request.resolve(data.value);
+  };
+  worker.onerror=()=>free();worker.onmessageerror=()=>free();
+  signal?.addEventListener('abort',free,{once:true});
+  const request=(kind:'open'|'render',extra:Record<string,unknown>)=>new Promise<unknown>((resolve,reject)=>{
+    if(closed){reject(new Error('문서가 닫혔어.'));return;}
+    const next=++id;pending.set(next,{resolve,reject});
+    try{worker.postMessage({id:next,kind,...extra});}catch(error){pending.delete(next);reject(error);}
+  });
   try{
-    const count=doc.pageCount();
-    if(count<1||count>3000)throw new Error('페이지 수가 지원 범위를 벗어났어. (1–3,000쪽)');
-    const pages=Array.from({length:count},(_,i)=>{
-      const p=JSON.parse(doc.getPageInfo(i));
-      if(!Number.isFinite(p.width)||!Number.isFinite(p.height)||p.width<=0||p.height<=0)throw new Error('페이지 크기를 읽지 못했어.');
-      return {width:p.width,height:p.height};
-    });
+    const pages=await request('open',{file,url:new URL(`${import.meta.env.BASE_URL}engine/rhwp-0.8.6.wasm`,location.href).href}) as PageSize[];
+    const doc:RemoteDocument={free,renderPageSvg:(index)=>request('render',{index}) as Promise<string>};
     return {doc,key,name:file.name,pages};
-  }catch(error){doc.free();throw error;}
+  }catch(error){free();throw error;}finally{signal?.removeEventListener('abort',free);}
 }
 const pageCaches=new WeakMap<DocumentSession,Map<number,string>>();
 const MAX_CACHE_BYTES=24*1024*1024,MAX_CACHE_PAGES=16;
 /** Sanitized, isolated IDs; no links or remote resources from an opened document. */
-export function renderPage(session:DocumentSession,index:number):string{
+export async function renderPage(session:DocumentSession,index:number):Promise<string>{
   let cache=pageCaches.get(session);if(!cache){cache=new Map();pageCaches.set(session,cache);}
   const cached=cache.get(index);
   if(cached!==undefined){cache.delete(index);cache.set(index,cached);return cached;}
-  const tree=DOMPurify.sanitize(session.doc.renderPageSvg(index),{USE_PROFILES:{svg:true,svgFilters:true},FORBID_TAGS:['a','style','foreignObject','script','animate','set'],FORBID_ATTR:['style'],RETURN_DOM_FRAGMENT:true});
+  const tree=DOMPurify.sanitize(await session.doc.renderPageSvg(index),{USE_PROFILES:{svg:true,svgFilters:true},FORBID_TAGS:['a','style','foreignObject','script','animate','set'],FORBID_ATTR:['style'],RETURN_DOM_FRAGMENT:true});
   const svg=tree.firstElementChild;
   if(!svg||svg.localName!=='svg')throw new Error('페이지 그림을 해석하지 못했어.');
   const prefix=`page-${session.key}-${index}-`;

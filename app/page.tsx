@@ -16,7 +16,7 @@ const PageContent=memo(function PageContent({session,index,visible,priority}:{se
   const [svg,setSvg]=useState('');const [error,setError]=useState('');
   useEffect(()=>{
     if(!visible){setSvg('');return;}let active=true;
-    const cancel=queuePageRender(()=>{try{const value=renderPage(session,index);if(active){setSvg(value);setError('');}}catch{if(active)setError('이 페이지를 표시하지 못했어. 원본 한글 문서에서 확인해 줘.');}},priority);
+    const cancel=queuePageRender(async()=>{try{const value=await renderPage(session,index);if(active){setSvg(value);setError('');}}catch{if(active)setError('이 페이지를 표시하지 못했어. 원본 한글 문서에서 확인해 줘.');}},priority);
     return()=>{active=false;cancel();};
   },[session,index,visible,priority]);
   if(error)return <div className="sheet-status" role="alert">{error}</div>;
@@ -31,6 +31,7 @@ export default function Home(){
   const [pageInput,setPageInput]=useState('1');
   const [documentMs,setDocumentMs]=useState<number|null>(null);
   const fileInput=useRef<HTMLInputElement>(null),stage=useRef<HTMLDivElement>(null);
+  const opening=useRef<AbortController|null>(null);
   const current=useRef<DocumentSession|null>(null),loadId=useRef(0),mounted=useRef(true),dragDepth=useRef(0);
   const restoring=useRef<SavedView|null>(null),anchor=useRef<{x:number;y:number;cx:number;cy:number;oldScale:number}|null>(null);
   const drag=useRef<{id:number;x:number;y:number;left:number;top:number;moved:boolean}|null>(null);
@@ -42,10 +43,10 @@ export default function Home(){
     try{localStorage.setItem(VIEW_KEY,JSON.stringify({key:s.key,cols:v.cols,zoom:v.zoom,left:el.scrollLeft/v.scale,top:el.scrollTop/v.scale}));}catch{setNotice('보기 위치를 저장하지 못했어. 브라우저의 사이트 저장 설정을 확인해 줘.');}
   },[]);
   const open=useCallback(async(file:File,restoreKey?:string)=>{
-    saveView();const started=performance.now();const id=++loadId.current;setDocumentMs(null);setBusy(restoreKey?'마지막 문서를 복원하는 중…':'문서를 여는 중…');setNotice('');
+    saveView();opening.current?.abort();const controller=new AbortController();opening.current=controller;const started=performance.now();const id=++loadId.current;setDocumentMs(null);setBusy(restoreKey?'마지막 문서를 복원하는 중…':'문서를 여는 중…');setNotice('');
     try{
       const key=restoreKey||Array.from(crypto.getRandomValues(new Uint32Array(4)),n=>n.toString(16)).join("-");
-      const next=await parseDocument(file,key);
+      const next=await parseDocument(file,key,controller.signal);
       if(id!==loadId.current||!mounted.current){next.doc.free();return;}
       setDocumentMs(performance.now()-started);
       const previous=current.current;current.current=next;
@@ -62,7 +63,7 @@ export default function Home(){
     readSavedFile().then(value=>{if(mounted.current&&id===loadId.current&&value)void open(value.file,value.key);}).catch(()=>setNotice('브라우저 저장소에 접근하지 못했어. 파일을 직접 열 수는 있어.'));
     const hide=()=>saveView(),visibility=()=>{if(document.visibilityState==='hidden')saveView();};
     window.addEventListener('pagehide',hide);document.addEventListener('visibilitychange',visibility);
-    return()=>{mounted.current=false;++loadId.current;window.removeEventListener('pagehide',hide);document.removeEventListener('visibilitychange',visibility);};
+    return()=>{mounted.current=false;++loadId.current;opening.current?.abort();window.removeEventListener('pagehide',hide);document.removeEventListener('visibilitychange',visibility);};
   },[open,saveView]);
   useEffect(()=>{const el=stage.current;if(!el)return;const observe=()=>setViewport(v=>({...v,width:el.clientWidth,height:el.clientHeight,left:el.scrollLeft,top:el.scrollTop}));const ro=new ResizeObserver(observe);ro.observe(el);observe();return()=>ro.disconnect();},[]);
   useLayoutEffect(()=>{const el=stage.current;if(!el||!session)return;
@@ -139,7 +140,7 @@ export default function Home(){
   };
   const fit=()=>{anchor.current=null;if(zoom===1){restoring.current=null;if(stage.current)stage.current.scrollLeft=0;return;}restoreRow(cols);setZoom(1);};
   const chooseCols=(n:number)=>{if(n===cols)return;anchor.current=null;restoreRow(n);setCols(n);setZoom(1);};
-  const clear=async()=>{saveView();++loadId.current;setBusy('저장된 문서를 지우는 중…');try{await clearFile();try{localStorage.removeItem(VIEW_KEY);}catch{}const previous=current.current;current.current=null;setDocumentMs(null);setSession(null);setSaved(false);setZoom(1);setCols(2);setNotice('');if(previous)setTimeout(()=>previous.doc.free(),0);}catch{setNotice('저장된 문서를 지우지 못했어. 브라우저의 사이트 설정에서 삭제해 줘.');}finally{setBusy('');}};
+  const clear=async()=>{saveView();++loadId.current;opening.current?.abort();setBusy('저장된 문서를 지우는 중…');try{await clearFile();try{localStorage.removeItem(VIEW_KEY);}catch{}const previous=current.current;current.current=null;setDocumentMs(null);setSession(null);setSaved(false);setZoom(1);setCols(2);setNotice('');if(previous)setTimeout(()=>previous.doc.free(),0);}catch{setNotice('저장된 문서를 지우지 못했어. 브라우저의 사이트 설정에서 삭제해 줘.');}finally{setBusy('');}};
   const endDrag=()=>{const d=drag.current;if(d&&stage.current?.hasPointerCapture(d.id))stage.current.releasePointerCapture(d.id);setDragging(false);setTimeout(()=>{drag.current=null;},0);};
   return <main className="app" onDragEnter={e=>{e.preventDefault();if(e.dataTransfer.types.includes('Files')){dragDepth.current++;setDrop(true);}}} onDragOver={e=>e.preventDefault()} onDragLeave={e=>{e.preventDefault();if(--dragDepth.current<=0){dragDepth.current=0;setDrop(false);}}} onDrop={e=>{e.preventDefault();dragDepth.current=0;setDrop(false);if(e.dataTransfer.files[0])void open(e.dataTransfer.files[0]);}}>
     <header className="topbar"><div className="brand"><div className="brand-icon"><Grid2X2 size={22}/></div>HWP <span>Grid</span></div><div className="filename" title={session?.name}>{session?.name||'한글 문서를 한눈에, 자유롭게.'}</div><Button onClick={()=>fileInput.current?.click()}><FolderOpen/>문서 열기</Button><input ref={fileInput} type="file" accept=".hwp,.hwpx" aria-label="한글 문서 파일" hidden onChange={e=>{const file=e.target.files?.[0];e.target.value='';if(file)void open(file);}}/></header>
