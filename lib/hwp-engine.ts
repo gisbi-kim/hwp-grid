@@ -1,8 +1,17 @@
 import DOMPurify from 'dompurify';
 import {documentCacheKey,cachedDocument,cachedPage,cacheDocument,cachePage} from './document-cache';
+import type {EditCommand,EditState} from './edit-model';
 export type PageSize=Readonly<{width:number;height:number}>;
 type RemoteDocument={renderPageSvg:(index:number)=>Promise<string>;free:()=>void};
 export type DocumentSession=Readonly<{doc:RemoteDocument;key:string;name:string;pages:readonly PageSize[];cacheId?:string;cacheHit?:boolean}>;
+export type EditSession=DocumentSession&{doc:RemoteDocument&{edit:(command:EditCommand)=>Promise<EditState>;editState:()=>Promise<EditState>;exportCopy:(format:'hwp'|'hwpx')=>Promise<Uint8Array<ArrayBuffer>>;selectedText:()=>Promise<string>;clipboard:(forceObject?:boolean)=>Promise<{text:string;html:string}>;checkpoint:()=>Promise<EditState>;restoreCheckpoint:(id:number)=>Promise<EditState>}};
+export function editCopyName(name:string){return name.replace(/\.(hwp|hwpx)$/i,'')+'_편집본_'+new Date().toISOString().replace(/[:.]/g,'-')+(/\.hwpx$/i.test(name)?'.hwpx':'.hwp');}
+export async function createEditCopy(file:File,signal:AbortSignal,askPassword:(retry:boolean)=>Promise<string|null>):Promise<EditSession>{
+  signal.throwIfAborted();
+  // A new File and a separate worker: no writes to saved originals or render caches.
+  const copy=new File([file],editCopyName(file.name),{type:file.type,lastModified:Date.now()});
+  return await parseWithEngine(copy,crypto.randomUUID(),signal,askPassword,true) as EditSession;
+}
 const workers=new Map<Worker,number>();
 export function engineMemoryBytes(){return Array.from(workers.values()).reduce((a,b)=>a+b,0);}
 export async function parseDocument(file:File,key:string,signal?:AbortSignal,askPassword?:(retry:boolean)=>Promise<string|null>):Promise<DocumentSession>{
@@ -41,7 +50,7 @@ export async function parseDocument(file:File,key:string,signal?:AbortSignal,ask
     return {doc,key,name:file.name,pages:sizes,cacheId,cacheHit:!!pages};
   }catch(error){free();throw error;}
 }
-async function parseWithEngine(file:File,key:string,signal?:AbortSignal,askPassword?:(retry:boolean)=>Promise<string|null>):Promise<DocumentSession>{
+async function parseWithEngine(file:File,key:string,signal?:AbortSignal,askPassword?:(retry:boolean)=>Promise<string|null>,editable=false):Promise<DocumentSession>{
   const worker=new Worker(new URL('./hwp-worker.ts',import.meta.url),{type:'module'});
   workers.set(worker,0);
   const pending=new Map<number,{resolve:(value:unknown)=>void;reject:(error:Error)=>void}>();
@@ -58,7 +67,7 @@ async function parseWithEngine(file:File,key:string,signal?:AbortSignal,askPassw
   };
   worker.onerror=()=>free();worker.onmessageerror=()=>free();
   signal?.addEventListener('abort',free,{once:true});
-  const request=(kind:'open'|'render',extra:Record<string,unknown>)=>new Promise<unknown>((resolve,reject)=>{
+  const request=(kind:'open'|'render'|'edit'|'editState'|'exportCopy'|'selectedText'|'clipboard'|'checkpoint'|'restoreCheckpoint',extra:Record<string,unknown>={})=>new Promise<unknown>((resolve,reject)=>{
     if(closed){reject(new Error('문서가 닫혔습니다.'));return;}
     const next=++id;pending.set(next,{resolve,reject});
     try{worker.postMessage({id:next,kind,...extra});}catch(error){pending.delete(next);reject(error);}
@@ -66,7 +75,7 @@ async function parseWithEngine(file:File,key:string,signal?:AbortSignal,askPassw
   try{
     let pages:PageSize[],password:string|undefined;
     for(;;){
-      try{pages=await request('open',{file,password,url:new URL(`${import.meta.env.BASE_URL}engine/rhwp-0.8.6.wasm`,location.href).href}) as PageSize[];password=undefined;break;}
+      try{pages=await request('open',{file,password,editable,url:new URL(`${import.meta.env.BASE_URL}engine/rhwp-0.8.6.wasm`,location.href).href}) as PageSize[];password=undefined;break;}
       catch(error){
         const message=String(error instanceof Error?error.message:error);
         if(!askPassword||!/비밀번호가 필요한|비밀번호가 일치하지 않/.test(message))throw error;
@@ -77,7 +86,7 @@ async function parseWithEngine(file:File,key:string,signal?:AbortSignal,askPassw
         password=entered;
       }
     }
-    const doc:RemoteDocument={free,renderPageSvg:(index)=>request('render',{index}) as Promise<string>};
+    const doc={free,renderPageSvg:(index:number)=>request('render',{index}) as Promise<string>,...(editable?{edit:(command:EditCommand)=>request('edit',{command}) as Promise<EditState>,editState:()=>request('editState') as Promise<EditState>,exportCopy:(format:'hwp'|'hwpx')=>request('exportCopy',{format}) as Promise<Uint8Array<ArrayBuffer>>,selectedText:()=>request('selectedText') as Promise<string>,clipboard:(forceObject=false)=>request('clipboard',{forceObject}) as Promise<{text:string;html:string}>,checkpoint:()=>request('checkpoint') as Promise<EditState>,restoreCheckpoint:(index:number)=>request('restoreCheckpoint',{index}) as Promise<EditState>}:{})};
     return {doc,key,name:file.name,pages};
   }catch(error){free();throw error;}finally{signal?.removeEventListener('abort',free);}
 }

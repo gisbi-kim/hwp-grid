@@ -12,7 +12,7 @@
     "dev": "node scripts/prepare-assets.mjs && vite",
     "build": "node scripts/prepare-assets.mjs && tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node scripts/test-cache.mjs"
+    "test": "node scripts/test-cache.mjs && node scripts/test-editor.mjs && node scripts/test-edit-persistence.mjs && node scripts/test-editor-insert.mjs && node scripts/test-editor-pagination.mjs && node scripts/test-editor-cell-navigation.mjs && node scripts/test-editor-multiline.mjs && node scripts/test-editor-font-step.mjs && node scripts/test-editor-image-flow.mjs && node scripts/test-page-numbers.mjs"
   },
   "dependencies": {
     "@fontsource/noto-sans-kr": "5.3.0",
