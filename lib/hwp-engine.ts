@@ -1,7 +1,8 @@
 import DOMPurify from 'dompurify';
+import {documentCacheKey,cachedDocument,cachedPage,cacheDocument,cachePage} from './document-cache';
 export type PageSize=Readonly<{width:number;height:number}>;
 type RemoteDocument={renderPageSvg:(index:number)=>Promise<string>;free:()=>void};
-export type DocumentSession=Readonly<{doc:RemoteDocument;key:string;name:string;pages:readonly PageSize[]}>;
+export type DocumentSession=Readonly<{doc:RemoteDocument;key:string;name:string;pages:readonly PageSize[];cacheId?:string;cacheHit?:boolean}>;
 const workers=new Map<Worker,number>();
 export function engineMemoryBytes(){return Array.from(workers.values()).reduce((a,b)=>a+b,0);}
 export async function parseDocument(file:File,key:string,signal?:AbortSignal,askPassword?:(retry:boolean)=>Promise<string|null>):Promise<DocumentSession>{
@@ -9,6 +10,38 @@ export async function parseDocument(file:File,key:string,signal?:AbortSignal,ask
   if(file.size>1024*1024*1024)throw new Error('1 GB 이하의 문서만 열 수 있습니다.');
   if(!file.size)throw new Error('빈 파일입니다. 다른 문서를 선택해 주세요.');
   signal?.throwIfAborted();
+  let cacheId:string|undefined;
+  try{cacheId=await documentCacheKey(file);}catch{/* Cache unavailable: use the engine. */}
+  signal?.throwIfAborted();
+  const pages=cacheId?await cachedDocument(cacheId).catch(()=>undefined):undefined;
+  signal?.throwIfAborted();
+  let encrypted=false,closed=false,engine:Promise<DocumentSession>|undefined;
+  const controller=new AbortController();
+  const password=async(retry:boolean)=>{encrypted=true;return askPassword?askPassword(retry):null;};
+  const free=()=>{closed=true;controller.abort();signal?.removeEventListener('abort',free);void engine?.then(s=>s.doc.free(),()=>{});};
+  signal?.addEventListener('abort',free,{once:true});
+  const getEngine=()=>{
+    if(closed)throw new DOMException('문서가 닫혔습니다.','AbortError');
+    return engine??=parseWithEngine(file,key,controller.signal,password);
+  };
+  try{
+    const sizes=pages??(await getEngine()).pages;
+    if(closed||signal?.aborted)throw new DOMException('문서 열기를 취소했습니다.','AbortError');
+    // Never persist decrypted output or password-protected document metadata.
+    if(encrypted)cacheId=undefined;
+    if(cacheId&&!pages)await cacheDocument(cacheId,sizes);
+    signal?.throwIfAborted();
+    const doc:RemoteDocument={free,renderPageSvg:async index=>{
+      if(closed)throw new DOMException('문서가 닫혔습니다.','AbortError');
+      if(cacheId){const svg=await cachedPage(cacheId,index).catch(()=>undefined);if(svg!==undefined)return svg;}
+      const svg=await (await getEngine()).doc.renderPageSvg(index);
+      if(cacheId&&!closed)await cachePage(cacheId,index,svg);
+      return svg;
+    }};
+    return {doc,key,name:file.name,pages:sizes,cacheId,cacheHit:!!pages};
+  }catch(error){free();throw error;}
+}
+async function parseWithEngine(file:File,key:string,signal?:AbortSignal,askPassword?:(retry:boolean)=>Promise<string|null>):Promise<DocumentSession>{
   const worker=new Worker(new URL('./hwp-worker.ts',import.meta.url),{type:'module'});
   workers.set(worker,0);
   const pending=new Map<number,{resolve:(value:unknown)=>void;reject:(error:Error)=>void}>();
