@@ -5,9 +5,9 @@ export type DocumentSession=Readonly<{doc:RemoteDocument;key:string;name:string;
 const workers=new Map<Worker,number>();
 export function engineMemoryBytes(){return Array.from(workers.values()).reduce((a,b)=>a+b,0);}
 export async function parseDocument(file:File,key:string,signal?:AbortSignal):Promise<DocumentSession>{
-  if(!/\.(hwp|hwpx)$/i.test(file.name))throw new Error('HWP 또는 HWPX 파일을 선택해 줘.');
-  if(file.size>1024*1024*1024)throw new Error('현재는 1 GB 이하의 문서를 열 수 있어.');
-  if(!file.size)throw new Error('빈 파일이야. 다른 문서를 선택해 줘.');
+  if(!/\.(hwp|hwpx)$/i.test(file.name))throw new Error('HWP 또는 HWPX 파일을 선택해 주세요.');
+  if(file.size>1024*1024*1024)throw new Error('1 GB 이하의 문서만 열 수 있습니다.');
+  if(!file.size)throw new Error('빈 파일입니다. 다른 문서를 선택해 주세요.');
   signal?.throwIfAborted();
   const worker=new Worker(new URL('./hwp-worker.ts',import.meta.url),{type:'module'});
   workers.set(worker,0);
@@ -15,7 +15,7 @@ export async function parseDocument(file:File,key:string,signal?:AbortSignal):Pr
   let id=0,closed=false;
   const free=()=>{
     if(closed)return;closed=true;worker.terminate();workers.delete(worker);
-    for(const request of pending.values())request.reject(new Error('문서가 닫혔어.'));
+    for(const request of pending.values())request.reject(new Error('문서가 닫혔습니다.'));
     pending.clear();
   };
   worker.onmessage=({data})=>{
@@ -26,7 +26,7 @@ export async function parseDocument(file:File,key:string,signal?:AbortSignal):Pr
   worker.onerror=()=>free();worker.onmessageerror=()=>free();
   signal?.addEventListener('abort',free,{once:true});
   const request=(kind:'open'|'render',extra:Record<string,unknown>)=>new Promise<unknown>((resolve,reject)=>{
-    if(closed){reject(new Error('문서가 닫혔어.'));return;}
+    if(closed){reject(new Error('문서가 닫혔습니다.'));return;}
     const next=++id;pending.set(next,{resolve,reject});
     try{worker.postMessage({id:next,kind,...extra});}catch(error){pending.delete(next);reject(error);}
   });
@@ -45,7 +45,7 @@ export async function renderPage(session:DocumentSession,index:number):Promise<s
   if(cached!==undefined){cache.delete(index);cache.set(index,cached);return cached;}
   const tree=DOMPurify.sanitize(await session.doc.renderPageSvg(index),{USE_PROFILES:{svg:true,svgFilters:true},FORBID_TAGS:['a','style','foreignObject','script','animate','set'],FORBID_ATTR:['style'],RETURN_DOM_FRAGMENT:true});
   const svg=tree.firstElementChild;
-  if(!svg||svg.localName!=='svg')throw new Error('페이지 그림을 해석하지 못했어.');
+  if(!svg||svg.localName!=='svg')throw new Error('페이지 그림을 해석하지 못했습니다.');
   const prefix=`page-${session.key}-${index}-`;
   for(const el of tree.querySelectorAll('*')){
     if(el.id)el.id=prefix+el.id;

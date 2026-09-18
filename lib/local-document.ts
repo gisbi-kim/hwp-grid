@@ -8,7 +8,7 @@ function db(){
     request.onupgradeneeded=()=>request.result.createObjectStore('files');
     request.onsuccess=()=>{const value=request.result;value.onversionchange=()=>{value.close();database=null;};resolve(value);};
     request.onerror=()=>reject(request.error);
-    request.onblocked=()=>reject(new Error('다른 탭에서 저장소를 사용 중이야.'));
+    request.onblocked=()=>reject(new Error('다른 탭에서 저장소를 사용 중입니다.'));
   }).catch(error=>{database=null;throw error});
   return database;
 }
