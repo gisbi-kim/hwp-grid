@@ -96,8 +96,8 @@ async function parseWithEngine(file:File,key:string,signal?:AbortSignal,askPassw
       const raw=await request('rawMemos') as RawMemo[];
       const bodies=new Map(raw.map(m=>[`${m.section}-${m.index}`,m.text]));
       for(const entry of entries){const body=bodies.get(`${entry.section}-${entry.memoIndex}`);if(body!==undefined)entry.text=body;}
-      const pages=await request('memoPages',{anchors:entries.map(({section,paragraph})=>({section,paragraph}))}) as (number|null)[];
-      return entries.map((m,i)=>({...m,page:pages[i]??undefined}));
+      const pages=await request('memoPages',{anchors:entries.map(({section,paragraph,charOffset,inTable,cellText,cellParagraph})=>({section,paragraph,charOffset,inTable,cellText,cellParagraph}))}) as ({page:number;anchor?:DocumentMemo['anchor']}|null)[];
+      return entries.map((m,i)=>({...m,...pages[i]}));
     })().catch(error=>{memoPromise=undefined;throw error;});
     const doc={free,memos,renderPageSvg:(index:number)=>request('render',{index}) as Promise<string>,...(editable?{edit:(command:EditCommand)=>request('edit',{command}) as Promise<EditState>,editState:()=>request('editState') as Promise<EditState>,exportCopy:(format:'hwp'|'hwpx')=>request('exportCopy',{format}) as Promise<Uint8Array<ArrayBuffer>>,selectedText:()=>request('selectedText') as Promise<string>,clipboard:(forceObject=false)=>request('clipboard',{forceObject}) as Promise<{text:string;html:string}>,checkpoint:()=>request('checkpoint') as Promise<EditState>,restoreCheckpoint:(index:number)=>request('restoreCheckpoint',{index}) as Promise<EditState>}:{})};
     return {doc,key,name:file.name,pages};
