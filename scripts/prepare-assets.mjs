@@ -9,7 +9,7 @@ function packageDir(name,parent=root){
   let entry=createRequire(join(parent,'package.json')).resolve(name);let dir2=dirname(entry);
   for(;;){const p=join(dir2,'package.json');if(existsSync(p)&&JSON.parse(readFileSync(p,'utf8')).name===name)return dir2;const next=dirname(dir2);if(next===dir2)throw new Error(`Cannot resolve package ${name}`);dir2=next;}
 }
-const core=packageDir('@rhwp/core');copyFileSync(join(core,'rhwp_bg.wasm'),'public/engine/rhwp-0.8.6.wasm');
+const core=packageDir('@rhwp/core');copyFileSync(join(core,'rhwp_bg.wasm'),'public/engine/rhwp-0.8.6-native-layout-1.wasm');
 const seen=new Set();const sections=[];const missing=[];
 function collect(name,parent=root){
  const dir=packageDir(name,parent),pkg=JSON.parse(readFileSync(join(dir,'package.json'),'utf8')),key=`${pkg.name}@${pkg.version}`;
