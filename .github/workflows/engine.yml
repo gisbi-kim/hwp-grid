@@ -34,6 +34,8 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
           cd upstream
           rustup override set stable
+          mkdir -p saved
+          git show HEAD:saved/blank2010.hwp > saved/blank2010.hwp
           git apply ../engine/native-layout.patch
           rustfmt --edition 2024 --config skip_children=true src/model/table.rs src/renderer/height_measurer.rs src/renderer/layout/table_layout.rs src/renderer/pagination/engine.rs
       - uses: Swatinem/rust-cache@v2
