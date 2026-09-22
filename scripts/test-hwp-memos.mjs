@@ -16,7 +16,7 @@ assert.equal(readMemoRecords(Buffer.concat([record(93,number(2)),record(67,Buffe
 assert.throws(()=>readMemoRecords(data.subarray(0,data.length-1),0));
 assert.throws(()=>readMemoRecords(Buffer.from([1,2,3]),0));
 assert.deepEqual(await readHwpMemos(Buffer.from('PK\x03\x04')),[]);
-function file(flags){const c=CFB.utils.cfb_new();const h=Buffer.alloc(256);h.write('HWP Document File');h.writeUInt32LE(flags,36);CFB.utils.cfb_add(c,'FileHeader',h);CFB.utils.cfb_add(c,'BodyText/Section2',flags&1?deflateRawSync(data):data);return CFB.write(c,{type:'buffer'});}
+function file(flags){const c=CFB.utils.cfb_new();const h=Buffer.alloc(256);h.write('HWP Document File');h.writeUInt32LE(flags,36);CFB.utils.cfb_add(c,'FileHeader',h);CFB.utils.cfb_add(c,'BodyText/Section2',flags&1?Buffer.concat([deflateRawSync(data),Buffer.alloc(16)]):data);return CFB.write(c,{type:'buffer'});}
 for(const flags of [0,1])assert.deepEqual(await readHwpMemos(file(flags)),readMemoRecords(data,2));
 for(const flags of [2,3,4,5])assert.deepEqual(await readHwpMemos(file(flags)),[]);
 if(process.env.HWP_MEMO_FIXTURE){const memos=await readHwpMemos(fs.readFileSync(process.env.HWP_MEMO_FIXTURE));assert.equal(memos.length,4);assert.ok(memos.every(m=>m.text.length>0));console.log('PASS local recovered fixture: four nonempty memo bodies');}
