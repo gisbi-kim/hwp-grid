@@ -78,7 +78,7 @@ async function parseWithEngine(file:File,key:string,signal?:AbortSignal,askPassw
   try{
     let pages:PageSize[],password:string|undefined;
     for(;;){
-      try{pages=await request('open',{file,password,editable,url:new URL(`${import.meta.env.BASE_URL}engine/rhwp-0.8.6.wasm`,location.href).href}) as PageSize[];password=undefined;break;}
+      try{pages=await request('open',{file,password,editable,url:new URL(`${import.meta.env.BASE_URL}engine/rhwp-0.8.6-native-layout-1.wasm`,location.href).href}) as PageSize[];password=undefined;break;}
       catch(error){
         const message=String(error instanceof Error?error.message:error);
         if(!askPassword||!/비밀번호가 필요한|비밀번호가 일치하지 않/.test(message))throw error;
