@@ -1,6 +1,6 @@
 // 본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다.
 "use client";
-import {lazy,Suspense,memo,useId,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
+import {Fragment,lazy,Suspense,memo,useId,useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
 const DocumentEditor=lazy(()=>import('@/components/document-editor').then(module=>({default:module.DocumentEditor})));
 import {BookmarkSidebar} from '@/components/bookmark-sidebar';
 import {Button} from '@/components/ui/button';
@@ -8,6 +8,7 @@ import {Input} from '@/components/ui/input';
 import {NativeSelect,NativeSelectOption} from '@/components/ui/native-select';
 import {AlertDialog,AlertDialogTrigger,AlertDialogContent,AlertDialogHeader,AlertDialogTitle,AlertDialogDescription,AlertDialogFooter,AlertDialogCancel,AlertDialogAction} from '@/components/ui/alert-dialog';
 import {FileText,Grid2X2,FolderOpen,ShieldCheck,ChevronLeft,ChevronRight,Minus,Plus,Scan,Maximize,Trash2,LoaderCircle,X,Bookmark,Columns2} from 'lucide-react';
+import {MEMO_GUTTER,memoCards} from '@/lib/memo-layout';
 import type {DocumentMemo} from '@/lib/document-memos';
 import {parseDocument,renderPage,type DocumentSession} from '@/lib/hwp-engine';
 import {readSavedFile,saveFile,clearFile,readView,VIEW_KEY,type SavedView} from '@/lib/local-document';
@@ -43,6 +44,21 @@ const BookmarkThumbnail=memo(function BookmarkThumbnail({session,index}:{session
   const page=session.pages[index];
   return <span ref={ref} className="bookmark-thumbnail" style={{aspectRatio:`${page.width} / ${page.height}`}} aria-hidden="true"><PageContent session={session} index={index} visible={visible} priority={false} idSuffix={id}/></span>;
 });
+function PageMemos({memos,page,scale,width,left,top}:{memos:DocumentMemo[];page:number;scale:number;width:number;left:number;top:number}){
+ const [active,setActive]=useState<string|null>(null);
+ const cards=memoCards(memos,page,scale);
+ if(!cards.length)return null;
+ const height=Math.max(...cards.map(c=>c.top+c.height));
+ return <aside className="page-memos" aria-label={`${page+1}쪽 메모`} style={{left,top,width:width+MEMO_GUTTER,height}}>
+  <svg className="memo-connectors" width={width+MEMO_GUTTER} height={height} aria-hidden="true">{cards.map(({memo:m,top:t})=>m.anchor&&<path key={m.id} className={active===m.id?'active':''} d={`M ${m.anchor.x*scale} ${(m.anchor.y+m.anchor.height/2)*scale} L ${width+8} ${(m.anchor.y+m.anchor.height/2)*scale} L ${width+22} ${t+22}`}/>)}</svg>
+  {cards.map(({memo:m,top:t,height:h},i)=><Fragment key={m.id}>
+   {m.anchor&&<button type="button" className={`memo-anchor ${active===m.id?'active':''}`} aria-label={`메모 ${i+1} 위치`} style={{left:m.anchor.x*scale-4,top:m.anchor.y*scale-2,height:Math.max(14,m.anchor.height*scale+4)}} onClick={()=>{setActive(m.id);document.getElementById(`memo-${m.id}-${left}-${top}`)?.focus();}}>{i+1}</button>}
+   <article id={`memo-${m.id}-${left}-${top}`} tabIndex={0} className={`memo-card ${active===m.id?'active':''}`} style={{left:width+22,top:t,height:h,width:MEMO_GUTTER-34}} onFocus={()=>setActive(m.id)} onMouseEnter={()=>setActive(m.id)} onMouseLeave={()=>setActive(null)} onPointerDown={e=>e.stopPropagation()}>
+    <header><strong>{m.author||'작성자 정보 없음'}</strong><small>메모 {i+1}</small></header><p>{m.text||'원본 파일에 메모 본문이 비어 있습니다.'}</p>{!m.anchor&&<small>정확한 위치 확인 불가{m.inTable?' · 표 시작 쪽':''}</small>}
+   </article>
+  </Fragment>)}
+ </aside>;
+}
 function CacheControls(){
   const [stats,setStats]=useState<{count:number;bytes:number}|null>(null);
   const [message,setMessage]=useState(''),[clearing,setClearing]=useState(false);
@@ -83,7 +99,20 @@ function DocumentPane({slot,compare,onCompare}:{slot:'current'|'comparison';comp
   const restoring=useRef<SavedView|null>(null),anchor=useRef<{x:number;y:number;cx:number;cy:number;oldScale:number}|null>(null);
   const drag=useRef<{id:number;x:number;y:number;left:number;top:number;moved:boolean}|null>(null);
   const touchMoved=useRef(false);
-  const layout=useMemo(()=>gridLayout(session?.pages||[],cols,viewport.width,zoom),[session,cols,viewport.width,zoom]);
+  const memoOptions=useMemo(()=>showMemos&&memos?.length?{gutter:MEMO_GUTTER,bottom:(i:number,scale:number)=>Math.max(0,...memoCards(memos,i,scale).map(c=>c.top+c.height+12))}:undefined,[showMemos,memos]);
+  const memoOptionsRef=useRef(memoOptions);memoOptionsRef.current=memoOptions;
+  const makeGrid=(pages:DocumentSession['pages'],columns:number,width:number,z:number)=>gridLayout(pages,columns,width,z,memoOptionsRef.current);
+  const layout=useMemo(()=>gridLayout(session?.pages||[],cols,viewport.width,zoom,memoOptions),[session,cols,viewport.width,zoom,memoOptions]);
+  const previousMemoLayout=useRef({options:memoOptions,layout,session});
+  useLayoutEffect(()=>{
+    const previous=previousMemoLayout.current,el=stage.current;
+    if(el&&previous.session===session&&previous.options!==memoOptions&&previous.layout.items.length){
+      const i=pageAtScroll(previous.layout.items,cols,el.scrollTop)-1;
+      const offset=(el.scrollTop-previous.layout.items[i].top)/previous.layout.scale;
+      el.scrollTop=Math.max(0,layout.items[i].top+offset*layout.scale);
+    }
+    previousMemoLayout.current={options:memoOptions,layout,session};
+  },[memoOptions,layout,session,cols]);
   const layoutRef=useRef(layout);layoutRef.current=layout;
   const currentPage=pageAtScroll(layout.items,cols,viewport.top);
   const viewState=useRef({cols,zoom,scale:layout.scale});viewState.current={cols,zoom,scale:layout.scale};
@@ -133,7 +162,7 @@ function DocumentPane({slot,compare,onCompare}:{slot:'current'|'comparison';comp
       const doc=current.current,old=layoutRef.current,v=viewState.current;
       if(doc&&!restoring.current&&old.items.length){
         const index=pageAtScroll(old.items,v.cols,el.scrollTop+1)-1;
-        const next=gridLayout(doc.pages,v.cols,el.clientWidth,v.zoom);
+        const next=makeGrid(doc.pages,v.cols,el.clientWidth,v.zoom);
         if(next.scale!==old.scale)restoring.current={key:doc.key,cols:v.cols,zoom:v.zoom,left:el.scrollLeft/old.scale,top:Math.max(0,next.items[index].top-28+Math.max(0,el.scrollTop+28-old.items[index].top)*next.scale/old.scale)/next.scale};
       }
       setViewport(v=>({...v,width:el.clientWidth,height:el.clientHeight,left:el.scrollLeft,top:el.scrollTop}));
@@ -156,14 +185,14 @@ function DocumentPane({slot,compare,onCompare}:{slot:'current'|'comparison';comp
     const begin=()=>{
       if(points.size<2){gesture=null;return;}
       const [a,b]=pair(),v=viewState.current,r=el.getBoundingClientRect();
-      const g=gridLayout(session.pages,v.cols,el.clientWidth,v.zoom);
+      const g=makeGrid(session.pages,v.cols,el.clientWidth,v.zoom);
       gesture={distance:Math.max(1,Math.hypot(b.x-a.x,b.y-a.y)),zoom:v.zoom,
         x:(el.scrollLeft+(a.x+b.x)/2-r.left-g.items[0].left)/g.scale,
         y:(el.scrollTop+(a.y+b.y)/2-r.top-28)/g.scale};
       touchMoved.current=true;
     };
     const down=(e:PointerEvent)=>{
-      if(e.pointerType!=='touch'||(e.target instanceof Element&&e.target.closest('button')))return;
+      if(e.pointerType!=='touch'||(e.target instanceof Element&&e.target.closest('button,.memo-card')))return;
       if(!points.size)touchMoved.current=false;
       points.set(e.pointerId,{x:e.clientX,y:e.clientY});
       el.setPointerCapture(e.pointerId);begin();
@@ -179,7 +208,7 @@ function DocumentPane({slot,compare,onCompare}:{slot:'current'|'comparison';comp
       if(!gesture)return;
       const [a,b]=pair(),r=el.getBoundingClientRect();
       const next=Math.max(.2,Math.min(8,gesture.zoom*Math.hypot(b.x-a.x,b.y-a.y)/gesture.distance));
-      const g=gridLayout(session.pages,viewState.current.cols,el.clientWidth,next);
+      const g=makeGrid(session.pages,viewState.current.cols,el.clientWidth,next);
       const cx=(a.x+b.x)/2-r.left,cy=(a.y+b.y)/2-r.top;
       if(next===viewState.current.zoom){
         el.scrollLeft=gesture.x*g.scale+g.items[0].left-cx;
@@ -207,7 +236,7 @@ function DocumentPane({slot,compare,onCompare}:{slot:'current'|'comparison';comp
   const go=(page:number)=>{const el=stage.current;if(!el||!session)return;const index=Math.max(0,Math.min(session.pages.length-1,Math.round(page)-1));el.scrollTop=layout.items[index].top-28;el.scrollLeft=Math.max(0,layout.items[index].left-28);setSelected(index);setPageInput(String(index+1));};
   const restoreRow=(n:number)=>{
     const s=current.current,el=stage.current;if(!s||!el)return;
-    const next=gridLayout(s.pages,n,el.clientWidth,1);
+    const next=makeGrid(s.pages,n,el.clientWidth,1);
     restoring.current={key:s.key,cols:n,zoom:1,left:0,top:Math.max(0,next.items[currentPage-1].top-28)/next.scale};
   };
   const fit=()=>{anchor.current=null;if(zoom===1){restoring.current=null;if(stage.current)stage.current.scrollLeft=0;return;}restoreRow(cols);setZoom(1);};
@@ -224,12 +253,12 @@ function DocumentPane({slot,compare,onCompare}:{slot:'current'|'comparison';comp
     </nav>
     <div className="pane-body">
       {session&&<BookmarkSidebar slot={slot}><div className="bookmark-heading"><Bookmark size={18}/><span>책갈피</span><small>{bookmarks.length}</small></div><div className="bookmark-list">{bookmarks.filter(i=>i<session.pages.length).map(i=><button key={`${session.key}-${i}`} type="button" className={selected===i?'active':''} aria-label={`${i+1}쪽 책갈피로 이동`} aria-current={selected===i?'page':undefined} onClick={()=>go(i+1)}><BookmarkThumbnail session={session} index={i}/><span className="bookmark-caption"><Bookmark size={12} fill="currentColor"/>{i+1}쪽</span></button>)}</div>{!bookmarks.length&&<p>페이지의 책갈피 버튼을 눌러 추가해 주세요.</p>}</BookmarkSidebar>}
-    <div ref={stage} tabIndex={0} role="region" aria-label="문서 페이지 격자" className={`stage ${session?'ready':''} ${dragging?'dragging':''}`} onScroll={e=>{const el=e.currentTarget;setPageInput(String(pageAtScroll(layout.items,cols,el.scrollTop)));setViewport(v=>({...v,left:el.scrollLeft,top:el.scrollTop}));}} onKeyDown={e=>{if(e.ctrlKey||e.metaKey||e.altKey)return;if(e.key==='ArrowRight'){e.preventDefault();go(currentPage+cols);}else if(e.key==='ArrowLeft'){e.preventDefault();go(currentPage-cols);}else if(e.key==='0')fit();else if(e.key==='+'||e.key==='=')changeZoom(1.25);else if(e.key==='-')changeZoom(1/1.25);}} onPointerDown={e=>{if(!session||e.button!==0||e.pointerType==='touch'||(e.target instanceof Element&&e.target.closest('button')))return;const el=e.currentTarget;if(e.nativeEvent.offsetX>=el.clientWidth&&e.target===el)return;e.preventDefault();touchMoved.current=false;el.focus({preventScroll:true});drag.current={id:e.pointerId,x:e.clientX,y:e.clientY,left:el.scrollLeft,top:el.scrollTop,moved:false};}} onPointerMove={e=>{const d=drag.current;if(!d||d.id!==e.pointerId)return;const dx=e.clientX-d.x,dy=e.clientY-d.y;if(Math.abs(dx)+Math.abs(dy)>4){d.moved=true;setDragging(true);e.currentTarget.setPointerCapture(d.id);e.currentTarget.scrollLeft=d.left-dx;e.currentTarget.scrollTop=d.top-dy;}}} onPointerUp={endDrag} onPointerCancel={endDrag}>
+    <div ref={stage} tabIndex={0} role="region" aria-label="문서 페이지 격자" className={`stage ${session?'ready':''} ${dragging?'dragging':''}`} onScroll={e=>{const el=e.currentTarget;setPageInput(String(pageAtScroll(layout.items,cols,el.scrollTop)));setViewport(v=>({...v,left:el.scrollLeft,top:el.scrollTop}));}} onKeyDown={e=>{if(e.ctrlKey||e.metaKey||e.altKey)return;if(e.key==='ArrowRight'){e.preventDefault();go(currentPage+cols);}else if(e.key==='ArrowLeft'){e.preventDefault();go(currentPage-cols);}else if(e.key==='0')fit();else if(e.key==='+'||e.key==='=')changeZoom(1.25);else if(e.key==='-')changeZoom(1/1.25);}} onPointerDown={e=>{if(!session||e.button!==0||e.pointerType==='touch'||(e.target instanceof Element&&e.target.closest('button,.memo-card')))return;const el=e.currentTarget;if(e.nativeEvent.offsetX>=el.clientWidth&&e.target===el)return;e.preventDefault();touchMoved.current=false;el.focus({preventScroll:true});drag.current={id:e.pointerId,x:e.clientX,y:e.clientY,left:el.scrollLeft,top:el.scrollTop,moved:false};}} onPointerMove={e=>{const d=drag.current;if(!d||d.id!==e.pointerId)return;const dx=e.clientX-d.x,dy=e.clientY-d.y;if(Math.abs(dx)+Math.abs(dy)>4){d.moved=true;setDragging(true);e.currentTarget.setPointerCapture(d.id);e.currentTarget.scrollLeft=d.left-dx;e.currentTarget.scrollTop=d.top-dy;}}} onPointerUp={endDrag} onPointerCancel={endDrag}>
       {busy&&<div className="loading-bar" role="status"><LoaderCircle className="spin" size={17}/>{busy}</div>}
-      {session?<div className="world" style={{width:layout.width,height:layout.height}}>{layout.items.map((p,i)=>{const visible=p.top<viewport.top+viewport.height+450&&p.top+p.height>viewport.top-450&&p.left<viewport.left+viewport.width+250&&p.left+p.width>viewport.left-250;return <section key={`${session.key}-${i}`} className={`sheet ${selected===i?'selected':''}`} style={p} aria-label={`${i+1}쪽`} onClick={()=>{if(!drag.current?.moved&&!touchMoved.current)setSelected(i);}} onDoubleClick={()=>{if(touchMoved.current)return;const el=stage.current;if(!el)return;const z=Math.max(.2,Math.min(8,zoom*Math.min((el.clientWidth-56)/p.width,(el.clientHeight-56)/p.height)));const next=gridLayout(session.pages,cols,el.clientWidth,z);restoring.current={key:session.key,cols,zoom:z,left:Math.max(0,next.items[i].left-28)/next.scale,top:Math.max(0,next.items[i].top-28)/next.scale};setZoom(z);}}><PageContent session={session} index={i} visible={visible} priority={p.top<viewport.top+viewport.height&&p.top+p.height>viewport.top&&p.left<viewport.left+viewport.width&&p.left+p.width>viewport.left}/><button type="button" className={`page-bookmark ${bookmarkSet.has(i)?'marked':''}`} aria-label={`${i+1}쪽 책갈피 ${bookmarkSet.has(i)?'해제':'추가'}`} aria-pressed={bookmarkSet.has(i)} onClick={e=>{e.stopPropagation();toggleBookmark(i);}} onDoubleClick={e=>e.stopPropagation()}><Bookmark size={18} fill={bookmarkSet.has(i)?'currentColor':'none'}/></button><span className="sheet-num">{i+1}</span></section>;})}</div>:<div className="welcome"><div className="welcome-inner"><div className="file-icon"><FileText size={42}/></div><h1>한글 문서를 한눈에</h1><p>HWP·HWPX 파일을 이곳에 끌어다 놓으면<br/>여러 페이지를 한눈에 볼 수 있습니다.</p><div className="format-tags"><span>HWP</span><span>HWPX</span></div><Button size="lg" onClick={()=>fileInput.current?.click()}><FolderOpen/>파일 선택</Button><div className="privacy-note"><ShieldCheck size={15}/>문서는 이 브라우저 안에서만 처리됩니다.</div><div className="shortcuts"><span><kbd>휠</kbd>스크롤</span><span><kbd>드래그</kbd>이동</span><span><kbd>Ctrl/⌘ + 휠</kbd>확대</span></div><div className="compat-note">글꼴이나 복잡한 표·수식은 한글 프로그램과 다르게 표시될 수 있습니다.<br/>최대 1 GB · HWP·HWPX · 암호 입력 지원</div></div></div>}
+      {session?<div className="world" style={{width:layout.width,height:layout.height}}>{layout.items.map((p,i)=>{const visible=p.top<viewport.top+viewport.height+450&&p.top+Math.max(p.height,memoOptions?.bottom(i,p.width/session.pages[i].width)||0)>viewport.top-450&&p.left<viewport.left+viewport.width+250&&p.left+p.width+(memoOptions?.gutter||0)>viewport.left-250;return <Fragment key={`${session.key}-${i}`}><section className={`sheet ${selected===i?'selected':''}`} style={p} aria-label={`${i+1}쪽`} onClick={()=>{if(!drag.current?.moved&&!touchMoved.current)setSelected(i);}} onDoubleClick={()=>{if(touchMoved.current)return;const el=stage.current;if(!el)return;const z=Math.max(.2,Math.min(8,zoom*Math.min((el.clientWidth-56)/p.width,(el.clientHeight-56)/p.height)));const next=makeGrid(session.pages,cols,el.clientWidth,z);restoring.current={key:session.key,cols,zoom:z,left:Math.max(0,next.items[i].left-28)/next.scale,top:Math.max(0,next.items[i].top-28)/next.scale};setZoom(z);}}><PageContent session={session} index={i} visible={visible} priority={p.top<viewport.top+viewport.height&&p.top+p.height>viewport.top&&p.left<viewport.left+viewport.width&&p.left+p.width>viewport.left}/><button type="button" className={`page-bookmark ${bookmarkSet.has(i)?'marked':''}`} aria-label={`${i+1}쪽 책갈피 ${bookmarkSet.has(i)?'해제':'추가'}`} aria-pressed={bookmarkSet.has(i)} onClick={e=>{e.stopPropagation();toggleBookmark(i);}} onDoubleClick={e=>e.stopPropagation()}><Bookmark size={18} fill={bookmarkSet.has(i)?'currentColor':'none'}/></button><span className="sheet-num">{i+1}</span></section>{showMemos&&memos&&visible&&<PageMemos memos={memos} page={i} scale={p.width/session.pages[i].width} width={p.width} left={p.left} top={p.top}/>}</Fragment>;})}</div>:<div className="welcome"><div className="welcome-inner"><div className="file-icon"><FileText size={42}/></div><h1>한글 문서를 한눈에</h1><p>HWP·HWPX 파일을 이곳에 끌어다 놓으면<br/>여러 페이지를 한눈에 볼 수 있습니다.</p><div className="format-tags"><span>HWP</span><span>HWPX</span></div><Button size="lg" onClick={()=>fileInput.current?.click()}><FolderOpen/>파일 선택</Button><div className="privacy-note"><ShieldCheck size={15}/>문서는 이 브라우저 안에서만 처리됩니다.</div><div className="shortcuts"><span><kbd>휠</kbd>스크롤</span><span><kbd>드래그</kbd>이동</span><span><kbd>Ctrl/⌘ + 휠</kbd>확대</span></div><div className="compat-note">글꼴이나 복잡한 표·수식은 한글 프로그램과 다르게 표시될 수 있습니다.<br/>최대 1 GB · HWP·HWPX · 암호 입력 지원</div></div></div>}
     </div>
     </div>
-    {showMemos&&session&&<aside className="memo-panel" aria-label="문서 메모"><div className="memo-panel-heading"><strong>메모 {memos?`(${memos.length})`:''}</strong><Button variant="ghost" size="sm" onClick={()=>setShowMemos(false)}>닫기</Button></div><p className="memo-help">쪽 번호는 현재 뷰어 기준입니다. 표 안 메모는 표 시작 위치로 이동합니다.</p>{memoError?<p role="alert">{memoError}</p>:memos===null?<p role="status">메모 읽는 중…</p>:memos.length===0?<p>문서에 메모가 없습니다.</p>:memos.map((m,i)=><article key={m.id}><div><strong>{m.author||'작성자 정보 없음'}</strong>{m.page!==undefined&&<Button variant="ghost" size="sm" onClick={()=>go(m.page!+1)}>{m.page+1}쪽{m.inTable?' · 표':''}</Button>}</div><p>{m.text||'원본 파일에 메모 본문이 비어 있습니다.'}</p><small>메모 {i+1}</small></article>)}</aside>}
+    {showMemos&&session&&<div className="memo-summary" role="status">{memoError||(!memos?'메모 읽는 중…':memos.length?`메모 ${memos.length}개 · 각 쪽 오른쪽에 표시`:'문서에 메모가 없습니다.')}{memos?.filter(m=>m.page!==undefined).map((m,i)=><button key={m.id} onClick={()=>{go(m.page!+1);if(stage.current&&m.anchor){const p=layout.items[m.page!];stage.current.scrollTop=Math.max(0,p.top+m.anchor.y*p.width/session.pages[m.page!].width-120);}}} aria-label={`메모 ${i+1}, ${m.page!+1}쪽으로 이동`}>{m.page!+1}쪽</button>)}</div>}
     <footer className="statusbar" aria-label="문서 상태 및 성능 정보"><RuntimeStats documentMs={documentMs}/>{slot==='current'&&<CacheControls/>}<span className="legal-line">본 제품은 한컴의 HWP 문서 파일(.hwp) 공개 문서를 참고하여 개발하였습니다. <a href={`${import.meta.env.BASE_URL}licenses.html`} target="_blank" rel="noreferrer">라이선스·고지</a></span><div className="statusbar-right"><span className="status" role="status">{session?`${session.pages.length}쪽${session.cacheHit?' · 캐시에서 열림':''} · ${saved?'이 브라우저에 저장됨':'문서 열림'}`:'마지막 문서·보기 위치는 이 브라우저에 저장됨'}</span><span className="footer-detail">{session?'표·수식·글꼴 배치는 원본과 다를 수 있음':'문서는 서버로 전송되지 않음'}</span><a href="https://github.com/edwardkim/rhwp" target="_blank" rel="noreferrer">rhwp</a></div></footer>
     {notice&&<div className="notice" role="alert"><span>{notice}</span><Button variant="ghost" size="icon-sm" aria-label="알림 닫기" onClick={()=>setNotice('')}><X/></Button></div>}{drop&&<div className="drop-overlay">HWP·HWPX 파일을 놓아서 열기</div>}
     {editFile&&<Suspense fallback={null}><DocumentEditor file={editFile} onClose={()=>setEditFile(null)}/></Suspense>}
