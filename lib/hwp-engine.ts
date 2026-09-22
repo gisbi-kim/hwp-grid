@@ -1,3 +1,4 @@
+import type {RawMemo} from './hwp-memo-records';
 import {rewriteHwpx} from './hwpx-rewrite';
 import {readSectionMemos,type DocumentMemo} from './document-memos';
 import DOMPurify from 'dompurify';
@@ -69,7 +70,7 @@ async function parseWithEngine(file:File,key:string,signal?:AbortSignal,askPassw
   };
   worker.onerror=()=>free();worker.onmessageerror=()=>free();
   signal?.addEventListener('abort',free,{once:true});
-  const request=(kind:'open'|'render'|'edit'|'editState'|'exportCopy'|'selectedText'|'clipboard'|'checkpoint'|'restoreCheckpoint'|'memoSource'|'memoPages',extra:Record<string,unknown>={})=>new Promise<unknown>((resolve,reject)=>{
+  const request=(kind:'open'|'render'|'edit'|'editState'|'exportCopy'|'selectedText'|'clipboard'|'checkpoint'|'restoreCheckpoint'|'memoSource'|'memoPages'|'rawMemos',extra:Record<string,unknown>={})=>new Promise<unknown>((resolve,reject)=>{
     if(closed){reject(new Error('문서가 닫혔습니다.'));return;}
     const next=++id;pending.set(next,{resolve,reject});
     try{worker.postMessage({id:next,kind,...extra});}catch(error){pending.delete(next);reject(error);}
@@ -92,6 +93,9 @@ async function parseWithEngine(file:File,key:string,signal?:AbortSignal,askPassw
     const memos=()=>memoPromise??=(async()=>{
       const entries:DocumentMemo[]=[];
       await rewriteHwpx(await request('memoSource') as Uint8Array,(name,xml)=>{entries.push(...readSectionMemos(xml,Number(/section(\d+)\.xml$/.exec(name)![1])));return xml;});
+      const raw=await request('rawMemos') as RawMemo[];
+      const bodies=new Map(raw.map(m=>[`${m.section}-${m.index}`,m.text]));
+      for(const entry of entries){const body=bodies.get(`${entry.section}-${entry.memoIndex}`);if(body!==undefined)entry.text=body;}
       const pages=await request('memoPages',{anchors:entries.map(({section,paragraph})=>({section,paragraph}))}) as (number|null)[];
       return entries.map((m,i)=>({...m,page:pages[i]??undefined}));
     })().catch(error=>{memoPromise=undefined;throw error;});
