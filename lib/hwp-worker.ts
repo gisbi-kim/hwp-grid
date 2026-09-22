@@ -1,3 +1,4 @@
+import {readHwpMemos} from './hwp-memo-records';
 import {pageNumberCopy} from './page-numbers';
 import init,{HwpDocument} from '@rhwp/core';
 import {DocumentEditor,type EditCommand} from './edit-model';
@@ -5,18 +6,20 @@ import {EditHistory} from './edit-history';
 import {restoreSavedPagination} from './saved-pagination';
 let doc:HwpDocument|null=null;
 let memory:WebAssembly.Memory|null=null;
+let originalFile:File|undefined;
 let source:Uint8Array|null=null;
 let editor:DocumentEditor|null=null;
 let copyPassword:string|undefined;
 let history=new EditHistory(),checkpointRevision=-1,copyFormat:'hwp'|'hwpx'='hwpx',fileBytes=0;
 let messages=Promise.resolve();
-type Message={id:number;kind:'open'|'render'|'edit'|'editState'|'exportCopy'|'selectedText'|'clipboard'|'checkpoint'|'restoreCheckpoint'|'memoSource'|'memoPages';anchors?:{section:number;paragraph:number}[];file?:File;url?:string;index?:number;password?:string;editable?:boolean;forceObject?:boolean;command?:EditCommand;format?:'hwp'|'hwpx'};
+type Message={id:number;kind:'open'|'render'|'edit'|'editState'|'exportCopy'|'selectedText'|'clipboard'|'checkpoint'|'restoreCheckpoint'|'memoSource'|'memoPages'|'rawMemos';anchors?:{section:number;paragraph:number}[];file?:File;url?:string;index?:number;password?:string;editable?:boolean;forceObject?:boolean;command?:EditCommand;format?:'hwp'|'hwpx'};
 self.onmessage=({data}:{data:Message})=>{messages=messages.catch(()=>{}).then(()=>handle(data));};
 const state=()=>({...editor!.state(),checkpoints:history.list()});
 async function handle(data:Message){
   try{
     let value:unknown;
     if(data.kind==='open'){
+      originalFile=data.file;
       const [wasm,buffer]=await Promise.all([init({module_or_path:data.url!}),source?Promise.resolve(source):data.file!.arrayBuffer().then(b=>new Uint8Array(b))]);
       memory=wasm.memory;
       source=buffer;
@@ -46,6 +49,7 @@ async function handle(data:Message){
     }else{
       if(!doc)throw new Error('문서가 닫혔습니다.');
       if(data.kind==='render')value=doc.renderPageSvg(data.index!);
+      else if(data.kind==='rawMemos')value=originalFile?await readHwpMemos(new Uint8Array(await originalFile.arrayBuffer())):[];
       else if(data.kind==='memoSource')value=doc.exportHwpx();
       else if(data.kind==='memoPages')value=(data.anchors||[]).map(a=>{try{const p=JSON.parse(doc!.getPageOfPosition(a.section,a.paragraph));return p.ok?p.page:null;}catch{return null;}});
       else {
