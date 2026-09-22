@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: edwardkim/rhwp
-          ref: f1f9c6a
+          ref: f1f9c6ae58344ee9368996d3543f76b9345cf227
           path: upstream
           sparse-checkout: |
             src
