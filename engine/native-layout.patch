@@ -83,7 +83,7 @@ index 775b47e..fc6f2c2 100644
          // 행별 **컨텐츠** 하한 — 2단계 축소 규칙(#5910)의 바닥. HeightMeasurer 미러.
          let mut content_row_floor = vec![0.0f64; row_count];
 diff --git a/src/renderer/typeset.rs b/src/renderer/typeset.rs
-index c60ea9e..98c8bf3 100644
+index c60ea9e..3698d6a 100644
 --- a/src/renderer/typeset.rs
 +++ b/src/renderer/typeset.rs
 @@ -3467,6 +3467,24 @@ fn para_has_floating_object(para: &Paragraph) -> bool {
@@ -175,15 +175,17 @@ index c60ea9e..98c8bf3 100644
              let cs_before = if r > cursor_row { cs } else { 0.0 };
              // [#3820 Stage 76] 직전 fragment가 내용은 모두 소비한 채 남긴
              // rowspan 행의 빈 꼬리 밴드. start_cut이 셀 텍스트를 숨기므로 여기서는
-@@ -21149,7 +21191,10 @@ impl TypesetEngine {
+@@ -21148,8 +21190,11 @@ impl TypesetEngine {
+             // 행 시작 y offset을 빼서 아래 행 셀을 다음 조각에 남긴다.
              // #1105처럼 hard-break가 뒤 행 셀 안에 있는 블록은 기존 블록 컷을
              // 유지해야 첫 조각의 `end_cut`이 한컴 기준과 맞는다.
-             let rowbreak_use_row_offsets =
+-            let rowbreak_use_row_offsets =
 -                rowbreak_rowspan_block && rowbreak_hard_break_row == Some(b_start);
-+                rowbreak_rowspan_block && (rowbreak_hard_break_row == Some(b_start)
-+                    || (rowbreak_block_content_exceeds_row_sum && table.cells.iter().any(|cell|
-+                        cell.row as usize == b_start && cell.row_span == 1
-+                        && cell.paragraphs.iter().any(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_)))))));
++            let nested_stacked_rows = mt.allows_row_break_split() && block_has_any_rowspan
++                && table.cells.iter().any(|cell| cell.row as usize == b_start && cell.row_span == 1
++                    && cell.paragraphs.iter().any(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_)))));
++            let rowbreak_use_row_offsets = nested_stacked_rows
++                || (rowbreak_rowspan_block && rowbreak_hard_break_row == Some(b_start));
              if (protected || rowbreak_rowspan_block) && b_start == r {
                  // [Task #1025] 연속분 커서가 블록 중간이면 블록 시작 컷을 적용.
                  let blk_start_cut: &[usize] = if r == cursor_row { &start_cut } else { &[] };
