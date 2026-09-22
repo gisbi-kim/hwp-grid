@@ -82,48 +82,8 @@ index 775b47e..fc6f2c2 100644
          let mut row_heights = vec![0.0f64; row_count];
          // 행별 **컨텐츠** 하한 — 2단계 축소 규칙(#5910)의 바닥. HeightMeasurer 미러.
          let mut content_row_floor = vec![0.0f64; row_count];
-diff --git a/src/renderer/pagination/engine.rs b/src/renderer/pagination/engine.rs
-index 9244fbd..ef7df22 100644
---- a/src/renderer/pagination/engine.rs
-+++ b/src/renderer/pagination/engine.rs
-@@ -141,6 +141,23 @@ fn has_floating_object(para: &Paragraph) -> bool {
- /// 오탐을 막기 위해 두 문단이 같은 단 기하(`column_start`/`segment_width`)를 쓰고,
- /// 어울림 개체가 없으며, 양쪽 LINE_SEG 가 합성본이 아닌 경우로만 좁힌다.
- fn stored_vpos_top_collision(prev: &Paragraph, curr: &Paragraph) -> bool {
-+    let wraps = |p: &Paragraph| p.controls.iter().any(|c| {
-+        let common = match c {
-+            Control::Table(t) => &t.common,
-+            Control::Picture(p) => &p.common,
-+            Control::Shape(s) => s.common(),
-+            Control::Equation(e) => &e.common,
-+            _ => return false,
-+        };
-+        !common.treat_as_char && matches!(common.text_wrap,
-+            crate::model::shape::TextWrap::Square | crate::model::shape::TextWrap::Tight | crate::model::shape::TextWrap::Through)
-+    });
-+    if !wraps(prev) && !wraps(curr) {
-+        if let (Some(a), Some(b)) = (prev.line_segs.last(), curr.line_segs.first()) {
-+            let real = |l: &LineSeg| !is_synthetic_line_seg(l) && l.tag & LineSeg::TAG_FIRST_SEGMENT != 0 && l.line_height > 0 && l.segment_width > 0;
-+            if real(a) && real(b) && b.vertical_pos >= 0 && b.vertical_pos < 5000 && a.vertical_pos > b.vertical_pos + 1000 { return true; }
-+        }
-+    }
-     if has_floating_object(prev) || has_floating_object(curr) {
-         return false;
-     }
-@@ -1375,7 +1392,10 @@ impl Paginator {
-                 .line_segs
-                 .iter()
-                 .enumerate()
--                .filter(|(i, ls)| *i > 0 && ls.vertical_pos == 0)
-+                .filter(|(i, ls)| *i > 0 && !is_synthetic_line_seg(ls)
-+                    && ls.tag & LineSeg::TAG_FIRST_SEGMENT != 0
-+                    && ls.vertical_pos >= 0 && ls.vertical_pos < 5000
-+                    && para.line_segs[*i - 1].vertical_pos > ls.vertical_pos + 1000)
-                 .map(|(i, _)| i)
-                 .collect();
-             if let Some(line) = internal_vpos_page_break_line(
 diff --git a/src/renderer/typeset.rs b/src/renderer/typeset.rs
-index c60ea9e..328ffb1 100644
+index c60ea9e..98c8bf3 100644
 --- a/src/renderer/typeset.rs
 +++ b/src/renderer/typeset.rs
 @@ -3467,6 +3467,24 @@ fn para_has_floating_object(para: &Paragraph) -> bool {
@@ -192,4 +152,39 @@ index c60ea9e..328ffb1 100644
              .or_else(|| {
                  st.profile.hwpx_stored_layout().then(|| {
                      hwpx_explicit_page_break_tail_line(
+@@ -21092,7 +21119,22 @@ impl TypesetEngine {
+         // 경계는 전부 reset 기록이 있는 표였고(384쪽 계약 보존), hwpctl 원장 표는
+         // 기록이 없다 — RHWP_DIAG_6307 실측.
+         let table_storage_declares_splits = rowbreak_table_has_internal_saved_vpos_reset(table);
++        let saved_first_row_boundary = if st.profile.hwp5_stored_pagination_layout()
++            && !is_continuation && cursor_row == 0 && !table.common.treat_as_char
++            && matches!(table.page_break, crate::model::table::TablePageBreak::RowBreak)
++            && matches!(table.common.text_wrap, crate::model::shape::TextWrap::TopAndBottom)
++            && table.common.height > 0 {
++                let mut sum = 0u64;
++                (0..row_count).find_map(|row| {
++                    let height = table.cells.iter().filter(|c| c.row as usize == row && c.row_span == 1).map(|c| c.height).max().unwrap_or(0);
++                    sum += height as u64;
++                    (row + 1 < row_count && height > 0 && sum.abs_diff(table.common.height as u64) <= 2
++                        && table.cells.iter().all(|c| c.row as usize >= row + 1 || c.row as usize + c.row_span as usize <= row + 1))
++                        .then_some(row + 1)
++                })
++            } else { None };
+         while r < row_count {
++            if saved_first_row_boundary == Some(r) { break; }
+             let cs_before = if r > cursor_row { cs } else { 0.0 };
+             // [#3820 Stage 76] 직전 fragment가 내용은 모두 소비한 채 남긴
+             // rowspan 행의 빈 꼬리 밴드. start_cut이 셀 텍스트를 숨기므로 여기서는
+@@ -21149,7 +21191,10 @@ impl TypesetEngine {
+             // #1105처럼 hard-break가 뒤 행 셀 안에 있는 블록은 기존 블록 컷을
+             // 유지해야 첫 조각의 `end_cut`이 한컴 기준과 맞는다.
+             let rowbreak_use_row_offsets =
+-                rowbreak_rowspan_block && rowbreak_hard_break_row == Some(b_start);
++                rowbreak_rowspan_block && (rowbreak_hard_break_row == Some(b_start)
++                    || (rowbreak_block_content_exceeds_row_sum && table.cells.iter().any(|cell|
++                        cell.row as usize == b_start && cell.row_span == 1
++                        && cell.paragraphs.iter().any(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_)))))));
+             if (protected || rowbreak_rowspan_block) && b_start == r {
+                 // [Task #1025] 연속분 커서가 블록 중간이면 블록 시작 컷을 적용.
+                 let blk_start_cut: &[usize] = if r == cursor_row { &start_cut } else { &[] };
 
