@@ -4,6 +4,7 @@ on:
     branches: [fix/native-layout]
     paths: [engine/**, .github/workflows/engine.yml]
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
@@ -37,7 +38,7 @@ jobs:
           mkdir -p saved
           git show HEAD:saved/blank2010.hwp > saved/blank2010.hwp
           git apply ../engine/native-layout.patch
-          rustfmt --edition 2024 --config skip_children=true src/model/table.rs src/renderer/height_measurer.rs src/renderer/layout/table_layout.rs src/renderer/pagination/engine.rs
+          rustfmt --edition 2024 --config skip_children=true src/model/table.rs src/renderer/height_measurer.rs src/renderer/layout/table_layout.rs src/renderer/typeset.rs
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: upstream
