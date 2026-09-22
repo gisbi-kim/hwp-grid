@@ -122,4 +122,74 @@ index 9244fbd..ef7df22 100644
                  .map(|(i, _)| i)
                  .collect();
              if let Some(line) = internal_vpos_page_break_line(
+diff --git a/src/renderer/typeset.rs b/src/renderer/typeset.rs
+index c60ea9e..328ffb1 100644
+--- a/src/renderer/typeset.rs
++++ b/src/renderer/typeset.rs
+@@ -3467,6 +3467,24 @@ fn para_has_floating_object(para: &Paragraph) -> bool {
+ ///
+ /// 오탐을 막기 위해 두 문단이 같은 단 기하(`column_start`/`segment_width`)를 쓰고,
+ /// 어울림 개체가 없으며, 양쪽 LINE_SEG 가 합성본이 아닌 경우로만 좁힌다.
++fn saved_native_reset(prev: &LineSeg, curr: &LineSeg) -> bool {
++    let real = |l: &LineSeg| !is_synthetic_line_seg(l) && l.tag & LineSeg::TAG_FIRST_SEGMENT != 0 && l.line_height > 0 && l.segment_width > 0;
++    real(prev) && real(curr) && curr.vertical_pos >= 0 && curr.vertical_pos < 5000 && prev.vertical_pos > curr.vertical_pos + 1000
++}
++fn has_side_wrap(para: &Paragraph) -> bool {
++    para.controls.iter().any(|c| {
++        let common = match c {
++            Control::Table(t) => &t.common,
++            Control::Picture(p) => &p.common,
++            Control::Shape(s) => s.common(),
++            Control::Equation(e) => &e.common,
++            _ => return false,
++        };
++        !common.treat_as_char && matches!(common.text_wrap,
++            crate::model::shape::TextWrap::Square | crate::model::shape::TextWrap::Tight | crate::model::shape::TextWrap::Through)
++    })
++}
++
+ fn stored_vpos_top_collision(prev: &Paragraph, curr: &Paragraph) -> bool {
+     if para_has_floating_object(prev) || para_has_floating_object(curr) {
+         return false;
+@@ -7478,6 +7496,11 @@ impl TypesetEngine {
+             // sample16-2022 pi=87 (빈 문단, text_len=0) skip ✓
+             // sample16-2022 pi=118 (content, sb=284) skip ✓
+             // sample16-2022 pi=316 (content, sb=0) skip ✓
++            let native_saved_reset = profile.hwp5_stored_pagination_layout()
++                && st.col_count == 1 && para_idx > 0
++                && !has_side_wrap(para) && !has_side_wrap(&paragraphs[para_idx - 1])
++                && paragraphs[para_idx - 1].line_segs.last().zip(para.line_segs.first())
++                    .is_some_and(|(a,b)| saved_native_reset(a,b));
+             let variant_vpos_reset_break = profile.hwp3_layout()
+                 && self.judge_hwp3_variant_vpos_reset_break(
+                     para,
+@@ -7504,7 +7527,7 @@ impl TypesetEngine {
+                 st.behind_float_table_para = None;
+             }
+ 
+-            if (force_page_break || para_style_break || variant_vpos_reset_break)
++            if (force_page_break || para_style_break || variant_vpos_reset_break || native_saved_reset)
+                 && !st.current_items.is_empty()
+             {
+                 st.force_new_page();
+@@ -17146,6 +17169,10 @@ impl TypesetEngine {
+         let hwp3_converted_hwp5 = st.profile.hwp3_layout()
+             && !st.profile.hwp3_native_layout()
+             && !st.profile.hwpx_container();
++        let native_internal_reset = (st.profile.hwp5_stored_pagination_layout()
++            && st.col_count == 1 && !has_side_wrap(para)).then(|| {
++                para.line_segs.windows(2).position(|pair| saved_native_reset(&pair[0], &pair[1])).map(|i| i + 1)
++            }).flatten();
+         let internal_forced_page_break_line = internal_vpos_page_break_line(
+             para,
+             fmt.line_heights.len(),
+@@ -17170,7 +17197,7 @@ impl TypesetEngine {
+                     self.dpi,
+                 )
+         });
+-        let forced_page_break_line = internal_forced_page_break_line
++        let forced_page_break_line = native_internal_reset.or(internal_forced_page_break_line)
+             .or_else(|| {
+                 st.profile.hwpx_stored_layout().then(|| {
+                     hwpx_explicit_page_break_tail_line(
 
