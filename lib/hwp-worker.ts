@@ -11,7 +11,7 @@ let editor:DocumentEditor|null=null;
 let copyPassword:string|undefined;
 let history=new EditHistory(),checkpointRevision=-1,copyFormat:'hwp'|'hwpx'='hwpx',fileBytes=0;
 let messages=Promise.resolve();
-type Message={id:number;kind:'open'|'render'|'edit'|'editState'|'exportCopy'|'selectedText'|'clipboard'|'checkpoint'|'restoreCheckpoint'|'memoSource'|'memoPages'|'rawMemos';anchors?:{section:number;paragraph:number}[];file?:File;url?:string;index?:number;password?:string;editable?:boolean;forceObject?:boolean;command?:EditCommand;format?:'hwp'|'hwpx'};
+type Message={id:number;kind:'open'|'render'|'edit'|'editState'|'exportCopy'|'selectedText'|'clipboard'|'checkpoint'|'restoreCheckpoint'|'memoSource'|'memoPages'|'rawMemos';anchors?:{section:number;paragraph:number;charOffset?:number;inTable?:boolean;cellText?:string;cellParagraph?:number}[];file?:File;url?:string;index?:number;password?:string;editable?:boolean;forceObject?:boolean;command?:EditCommand;format?:'hwp'|'hwpx'};
 self.onmessage=({data}:{data:Message})=>{messages=messages.catch(()=>{}).then(()=>handle(data));};
 const state=()=>({...editor!.state(),checkpoints:history.list()});
 async function handle(data:Message){
@@ -41,7 +41,18 @@ async function handle(data:Message){
       if(data.kind==='render')value=doc.renderPageSvg(data.index!);
       else if(data.kind==='rawMemos')value=originalFile?await readHwpMemos(new Uint8Array(await originalFile.arrayBuffer())):[];
       else if(data.kind==='memoSource')value=doc.exportHwpx();
-      else if(data.kind==='memoPages')value=(data.anchors||[]).map(a=>{try{const p=JSON.parse(doc!.getPageOfPosition(a.section,a.paragraph));return p.ok?p.page:null;}catch{return null;}});
+      else if(data.kind==='memoPages')value=(data.anchors||[]).map(a=>{try{if(a.charOffset!==undefined){let r;
+          if(a.inTable&&a.cellText){
+            // Resolve the real cell path from rendered text; accept only a unique match.
+            const groups=new Map<string,{text:string;path:unknown}>();
+            for(let page=0;page<doc!.pageCount();page++)for(const run of JSON.parse(doc!.getPageTextLayout(page)).runs){
+              if(run.secIdx!==a.section||run.parentParaIdx!==a.paragraph||run.cellParaIdx!==a.cellParagraph||!run.cellPath)continue;
+              const key=JSON.stringify(run.cellPath),g=groups.get(key)||{text:'',path:run.cellPath};g.text+=run.text;groups.set(key,g);
+            }
+            const matches=[...groups.values()].filter(g=>g.text===a.cellText);
+            if(matches.length===1)r=JSON.parse(doc!.getCursorRectByPath(a.section,a.paragraph,JSON.stringify(matches[0].path),a.charOffset));
+          }else if(!a.inTable)r=JSON.parse(doc!.getCursorRect(a.section,a.paragraph,a.charOffset));
+          if(r&&Number.isInteger(r.pageIndex)&&[r.x,r.y,r.height].every(Number.isFinite))return {page:r.pageIndex,anchor:{x:r.x,y:r.y,height:r.height}};}const p=JSON.parse(doc!.getPageOfPosition(a.section,a.paragraph));return p.ok?{page:p.page}:null;}catch{return null;}});
       else {
         if(!editor)throw new Error('읽기 전용 문서는 편집할 수 없습니다.');
         if(data.kind==='edit'){if(data.command?.kind==='pageNumbers')editor.replaceDocument(await pageNumberCopy(doc,data.command.startPage));else editor.command(data.command!);doc=editor.document;value=state();}
