@@ -2,6 +2,7 @@ import {pageNumberCopy} from './page-numbers';
 import init,{HwpDocument} from '@rhwp/core';
 import {DocumentEditor,type EditCommand} from './edit-model';
 import {EditHistory} from './edit-history';
+import {restoreSavedPagination} from './saved-pagination';
 let doc:HwpDocument|null=null;
 let memory:WebAssembly.Memory|null=null;
 let source:Uint8Array|null=null;
@@ -20,6 +21,15 @@ async function handle(data:Message){
       memory=wasm.memory;
       source=buffer;
       doc=data.password===undefined?new HwpDocument(source):HwpDocument.openWithPassword(source,data.password);
+      if(!data.editable){
+        try{await restoreSavedPagination(doc);}
+        catch(error){
+          // A failed compatibility pass must not leave a partly modified document.
+          console.warn('Saved pagination unavailable; using original layout',error);
+          doc.free();
+          doc=data.password===undefined?new HwpDocument(source):HwpDocument.openWithPassword(source,data.password);
+        }
+      }
       editor=data.editable?new DocumentEditor(doc,data.file!.size):null;
       copyPassword=data.editable?data.password:undefined;
       fileBytes=data.file!.size;copyFormat=/\.hwpx$/i.test(data.file!.name)?'hwpx':'hwp';
