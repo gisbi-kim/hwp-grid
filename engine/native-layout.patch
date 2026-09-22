@@ -83,7 +83,7 @@ index 775b47e..fc6f2c2 100644
          // 행별 **컨텐츠** 하한 — 2단계 축소 규칙(#5910)의 바닥. HeightMeasurer 미러.
          let mut content_row_floor = vec![0.0f64; row_count];
 diff --git a/src/renderer/typeset.rs b/src/renderer/typeset.rs
-index c60ea9e..9b7ea0a 100644
+index c60ea9e..c6bc7cc 100644
 --- a/src/renderer/typeset.rs
 +++ b/src/renderer/typeset.rs
 @@ -3467,6 +3467,24 @@ fn para_has_floating_object(para: &Paragraph) -> bool {
@@ -218,4 +218,13 @@ index c60ea9e..9b7ea0a 100644
                          (b_start..b_end).map(|x| cut_row_h[x]).sum::<f64>()
                              + cs * block_size.saturating_sub(1) as f64
                      } else if rowbreak_use_row_offsets {
+@@ -21375,7 +21422,7 @@ impl TypesetEngine {
+                 }
+                 let allow_block_split = if rowbreak_rowspan_block {
+                     r == cursor_row
+-                        || (res.hit_hard_break && res.consumed_height >= MIN_TOP_KEEP_PX)
++                        || ((res.hit_hard_break || (nested_stacked_rows && genuinely_page_larger)) && res.consumed_height >= MIN_TOP_KEEP_PX)
+                 } else {
+                     r == cursor_row
+                         || (genuinely_page_larger && res.consumed_height >= MIN_TOP_KEEP_PX)
 
