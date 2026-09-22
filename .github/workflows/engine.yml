@@ -1,0 +1,50 @@
+name: Verify native layout engine
+on:
+  push:
+    branches: [fix/native-layout]
+    paths: [engine/**, .github/workflows/engine.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: edwardkim/rhwp
+          ref: f1f9c6a
+          path: upstream
+          sparse-checkout: |
+            src
+            crates
+            assets
+            fonts
+            examples
+            tests/generated
+            tools/rhwp-subsecond
+            bindings/Native
+            tools/batch-convert
+            tools/llm_verifier/verdict_protocol
+            tools/llm_verifier/claim_bind
+            tools/llm_verifier/criteria_decomp
+      - run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+          cd upstream
+          rustup override set stable
+          git apply ../engine/native-layout.patch
+          cargo fmt --all
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: upstream
+      - working-directory: upstream
+        run: cargo build --locked -p rhwp --lib --target wasm32-unknown-unknown --profile release-test
+      - run: |
+          curl -fL https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.127/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl.tar.gz | tar xz
+          ./wasm-bindgen-0.2.127-x86_64-unknown-linux-musl/wasm-bindgen upstream/target/wasm32-unknown-unknown/release-test/rhwp.wasm --target web --out-dir engine-build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-build
+          path: engine-build
