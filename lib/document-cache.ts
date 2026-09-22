@@ -1,5 +1,5 @@
 // Bump when the parser, SVG output, or cache format changes.
-export const CACHE_VERSION = 'rhwp-0.8.6-native-layout-1';
+export const CACHE_VERSION = 'rhwp-0.8.6-footer-flow-2';
 export const CACHE_LIMIT = 10_000_000_000;
 type PageSize = Readonly<{width:number;height:number}>;
 type Entry = {id:string;pages:readonly PageSize[];bytes:number;lastUsed:number};

@@ -1,3 +1,4 @@
+import {protectFooterArea} from './footer-flow';
 import {readHwpMemos} from './hwp-memo-records';
 import {pageNumberCopy} from './page-numbers';
 import init,{HwpDocument} from '@rhwp/core';
@@ -23,6 +24,7 @@ async function handle(data:Message){
       memory=wasm.memory;
       source=buffer;
       doc=data.password===undefined?new HwpDocument(source):HwpDocument.openWithPassword(source,data.password);
+      if(!data.editable)protectFooterArea(doc);
       editor=data.editable?new DocumentEditor(doc,data.file!.size):null;
       copyPassword=data.editable?data.password:undefined;
       fileBytes=data.file!.size;copyFormat=/\.hwpx$/i.test(data.file!.name)?'hwpx':'hwp';
