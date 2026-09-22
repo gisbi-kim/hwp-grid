@@ -35,7 +35,7 @@ jobs:
           cd upstream
           rustup override set stable
           git apply ../engine/native-layout.patch
-          cargo fmt --all
+          rustfmt --edition 2024 --config skip_children=true src/model/table.rs src/renderer/height_measurer.rs src/renderer/layout/table_layout.rs src/renderer/pagination/engine.rs
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: upstream
