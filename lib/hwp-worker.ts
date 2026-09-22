@@ -10,7 +10,7 @@ let editor:DocumentEditor|null=null;
 let copyPassword:string|undefined;
 let history=new EditHistory(),checkpointRevision=-1,copyFormat:'hwp'|'hwpx'='hwpx',fileBytes=0;
 let messages=Promise.resolve();
-type Message={id:number;kind:'open'|'render'|'edit'|'editState'|'exportCopy'|'selectedText'|'clipboard'|'checkpoint'|'restoreCheckpoint';file?:File;url?:string;index?:number;password?:string;editable?:boolean;forceObject?:boolean;command?:EditCommand;format?:'hwp'|'hwpx'};
+type Message={id:number;kind:'open'|'render'|'edit'|'editState'|'exportCopy'|'selectedText'|'clipboard'|'checkpoint'|'restoreCheckpoint'|'memoSource'|'memoPages';anchors?:{section:number;paragraph:number}[];file?:File;url?:string;index?:number;password?:string;editable?:boolean;forceObject?:boolean;command?:EditCommand;format?:'hwp'|'hwpx'};
 self.onmessage=({data}:{data:Message})=>{messages=messages.catch(()=>{}).then(()=>handle(data));};
 const state=()=>({...editor!.state(),checkpoints:history.list()});
 async function handle(data:Message){
@@ -46,6 +46,8 @@ async function handle(data:Message){
     }else{
       if(!doc)throw new Error('문서가 닫혔습니다.');
       if(data.kind==='render')value=doc.renderPageSvg(data.index!);
+      else if(data.kind==='memoSource')value=doc.exportHwpx();
+      else if(data.kind==='memoPages')value=(data.anchors||[]).map(a=>{try{const p=JSON.parse(doc!.getPageOfPosition(a.section,a.paragraph));return p.ok?p.page:null;}catch{return null;}});
       else {
         if(!editor)throw new Error('읽기 전용 문서는 편집할 수 없습니다.');
         if(data.kind==='edit'){if(data.command?.kind==='pageNumbers')editor.replaceDocument(await pageNumberCopy(doc,data.command.startPage));else editor.command(data.command!);doc=editor.document;value=state();}

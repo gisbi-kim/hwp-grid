@@ -39,3 +39,5 @@ body{font-family:Arial,'Malgun Gothic','Noto Sans KR',sans-serif}
 .table-create-field{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:8px 0}.table-create-field input{width:120px}.editor-insert{padding-block:5px}
 
 .editor-toolbar select[aria-label="글꼴"]{width:150px}@media(max-width:720px){.editor-toolbar select[aria-label="글꼴"]{width:110px}}
+
+.memo-panel{position:absolute;right:12px;top:112px;bottom:48px;width:min(340px,calc(100% - 24px));z-index:12;overflow:auto;background:#202730;color:#e9eef5;border:1px solid #526477;border-radius:8px;padding:14px;box-shadow:0 6px 24px #0006}.document-pane{position:relative}.memo-panel-heading,.memo-panel article>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.memo-panel article{padding:12px 0;border-top:1px solid #526477}.memo-panel article p{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;margin:8px 0}.memo-help,.memo-panel small{font-size:11px;color:#b4c3d4}.memo-help{margin:10px 0}

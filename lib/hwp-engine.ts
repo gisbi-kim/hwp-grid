@@ -1,8 +1,10 @@
+import {rewriteHwpx} from './hwpx-rewrite';
+import {readSectionMemos,type DocumentMemo} from './document-memos';
 import DOMPurify from 'dompurify';
 import {documentCacheKey,cachedDocument,cachedPage,cacheDocument,cachePage} from './document-cache';
 import type {EditCommand,EditState} from './edit-model';
 export type PageSize=Readonly<{width:number;height:number}>;
-type RemoteDocument={renderPageSvg:(index:number)=>Promise<string>;free:()=>void};
+type RemoteDocument={memos:()=>Promise<DocumentMemo[]>;renderPageSvg:(index:number)=>Promise<string>;free:()=>void};
 export type DocumentSession=Readonly<{doc:RemoteDocument;key:string;name:string;pages:readonly PageSize[];cacheId?:string;cacheHit?:boolean}>;
 export type EditSession=DocumentSession&{doc:RemoteDocument&{edit:(command:EditCommand)=>Promise<EditState>;editState:()=>Promise<EditState>;exportCopy:(format:'hwp'|'hwpx')=>Promise<Uint8Array<ArrayBuffer>>;selectedText:()=>Promise<string>;clipboard:(forceObject?:boolean)=>Promise<{text:string;html:string}>;checkpoint:()=>Promise<EditState>;restoreCheckpoint:(id:number)=>Promise<EditState>}};
 export function editCopyName(name:string){return name.replace(/\.(hwp|hwpx)$/i,'')+'_편집본_'+new Date().toISOString().replace(/[:.]/g,'-')+(/\.hwpx$/i.test(name)?'.hwpx':'.hwp');}
@@ -40,7 +42,7 @@ export async function parseDocument(file:File,key:string,signal?:AbortSignal,ask
     if(encrypted)cacheId=undefined;
     if(cacheId&&!pages)await cacheDocument(cacheId,sizes);
     signal?.throwIfAborted();
-    const doc:RemoteDocument={free,renderPageSvg:async index=>{
+    const doc:RemoteDocument={free,memos:async()=>await (await getEngine()).doc.memos(),renderPageSvg:async index=>{
       if(closed)throw new DOMException('문서가 닫혔습니다.','AbortError');
       if(cacheId){const svg=await cachedPage(cacheId,index).catch(()=>undefined);if(svg!==undefined)return svg;}
       const svg=await (await getEngine()).doc.renderPageSvg(index);
@@ -67,7 +69,7 @@ async function parseWithEngine(file:File,key:string,signal?:AbortSignal,askPassw
   };
   worker.onerror=()=>free();worker.onmessageerror=()=>free();
   signal?.addEventListener('abort',free,{once:true});
-  const request=(kind:'open'|'render'|'edit'|'editState'|'exportCopy'|'selectedText'|'clipboard'|'checkpoint'|'restoreCheckpoint',extra:Record<string,unknown>={})=>new Promise<unknown>((resolve,reject)=>{
+  const request=(kind:'open'|'render'|'edit'|'editState'|'exportCopy'|'selectedText'|'clipboard'|'checkpoint'|'restoreCheckpoint'|'memoSource'|'memoPages',extra:Record<string,unknown>={})=>new Promise<unknown>((resolve,reject)=>{
     if(closed){reject(new Error('문서가 닫혔습니다.'));return;}
     const next=++id;pending.set(next,{resolve,reject});
     try{worker.postMessage({id:next,kind,...extra});}catch(error){pending.delete(next);reject(error);}
@@ -86,7 +88,14 @@ async function parseWithEngine(file:File,key:string,signal?:AbortSignal,askPassw
         password=entered;
       }
     }
-    const doc={free,renderPageSvg:(index:number)=>request('render',{index}) as Promise<string>,...(editable?{edit:(command:EditCommand)=>request('edit',{command}) as Promise<EditState>,editState:()=>request('editState') as Promise<EditState>,exportCopy:(format:'hwp'|'hwpx')=>request('exportCopy',{format}) as Promise<Uint8Array<ArrayBuffer>>,selectedText:()=>request('selectedText') as Promise<string>,clipboard:(forceObject=false)=>request('clipboard',{forceObject}) as Promise<{text:string;html:string}>,checkpoint:()=>request('checkpoint') as Promise<EditState>,restoreCheckpoint:(index:number)=>request('restoreCheckpoint',{index}) as Promise<EditState>}:{})};
+    let memoPromise:Promise<DocumentMemo[]>|undefined;
+    const memos=()=>memoPromise??=(async()=>{
+      const entries:DocumentMemo[]=[];
+      await rewriteHwpx(await request('memoSource') as Uint8Array,(name,xml)=>{entries.push(...readSectionMemos(xml,Number(/section(\d+)\.xml$/.exec(name)![1])));return xml;});
+      const pages=await request('memoPages',{anchors:entries.map(({section,paragraph})=>({section,paragraph}))}) as (number|null)[];
+      return entries.map((m,i)=>({...m,page:pages[i]??undefined}));
+    })().catch(error=>{memoPromise=undefined;throw error;});
+    const doc={free,memos,renderPageSvg:(index:number)=>request('render',{index}) as Promise<string>,...(editable?{edit:(command:EditCommand)=>request('edit',{command}) as Promise<EditState>,editState:()=>request('editState') as Promise<EditState>,exportCopy:(format:'hwp'|'hwpx')=>request('exportCopy',{format}) as Promise<Uint8Array<ArrayBuffer>>,selectedText:()=>request('selectedText') as Promise<string>,clipboard:(forceObject=false)=>request('clipboard',{forceObject}) as Promise<{text:string;html:string}>,checkpoint:()=>request('checkpoint') as Promise<EditState>,restoreCheckpoint:(index:number)=>request('restoreCheckpoint',{index}) as Promise<EditState>}:{})};
     return {doc,key,name:file.name,pages};
   }catch(error){free();throw error;}finally{signal?.removeEventListener('abort',free);}
 }
