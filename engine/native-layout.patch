@@ -1,0 +1,102 @@
+diff --git a/src/model/table.rs b/src/model/table.rs
+index f84da00..e731617 100644
+--- a/src/model/table.rs
++++ b/src/model/table.rs
+@@ -681,6 +681,41 @@ impl Table {
+     ///
+     /// 걸친 행 중 하나라도 `row_span==1` 선언이 없으면(미지 행) 기존 분배 규칙이
+     /// 담당하므로 0 을 돌려준다. 반환 벡터의 길이는 `row_count` 다.
++    /// Trust a complete, internally consistent stored micro-grid. Empty cells in
++    /// a vertically subdivided row do not each require a full font-sized line.
++    pub fn coherent_stored_row_heights(&self) -> Option<Vec<HwpUnit>> {
++        let n = self.row_count as usize;
++        if n < 2 || !self.common.treat_as_char || self.cell_spacing != 0
++            || !self.local_resize_cols.is_empty() { return None; }
++        let mut rows = vec![0; n];
++        for cell in &self.cells {
++            let r = cell.row as usize;
++            if r >= n || cell.height == 0 || cell.height >= 0x80000000 { return None; }
++            if cell.row_span == 1 { rows[r] = rows[r].max(cell.height); }
++            for p in &cell.paragraphs {
++                if !p.controls.is_empty() { return None; }
++                if p.text.chars().any(|c| c > '\u{001f}') {
++                    if p.line_segs.is_empty() { return None; }
++                    for line in &p.line_segs {
++                        if line.tag & 0x80000000 != 0 || line.vertical_pos < 0
++                            || line.vertical_pos.saturating_add(line.line_height) as u32 > cell.height.saturating_add(2) { return None; }
++                    }
++                }
++            }
++        }
++        if rows.contains(&0) { return None; }
++        let sum: u64 = rows.iter().map(|&v| v as u64).sum();
++        if sum.abs_diff(self.common.height as u64) > 2 { return None; }
++        for cell in &self.cells {
++            let r = cell.row as usize;
++            let end = r + cell.row_span as usize;
++            if end > n || end <= r { return None; }
++            let span: u64 = rows[r..end].iter().map(|&v| v as u64).sum();
++            if span.abs_diff(cell.height as u64) > 2 { return None; }
++        }
++        Some(rows)
++    }
++
+     pub fn rowspan_declared_overflow_shrink(&self) -> Vec<HwpUnit> {
+         let row_count = self.row_count as usize;
+         let mut shrink = vec![0 as HwpUnit; row_count];
+diff --git a/src/renderer/height_measurer.rs b/src/renderer/height_measurer.rs
+index 05cbef1..89d3792 100644
+--- a/src/renderer/height_measurer.rs
++++ b/src/renderer/height_measurer.rs
+@@ -2793,6 +2793,9 @@ impl HeightMeasurer {
+             }
+         }
+ 
++        if let Some(stored) = table.coherent_stored_row_heights() {
++            row_heights = stored.into_iter().map(|h| hwpunit_to_px(h as i32, self.dpi)).collect();
++        }
+         // 셀 간격 포함한 표 높이
+         let cell_spacing = hwpunit_to_px(table.cell_spacing as i32, self.dpi);
+         let raw_table_height: f64 =
+diff --git a/src/renderer/layout/table_layout.rs b/src/renderer/layout/table_layout.rs
+index 775b47e..fc6f2c2 100644
+--- a/src/renderer/layout/table_layout.rs
++++ b/src/renderer/layout/table_layout.rs
+@@ -3574,6 +3574,9 @@ impl LayoutEngine {
+                 });
+             let measured = tail_fitted.as_ref().unwrap_or(mt);
+             let mut rh = measured.row_heights.clone();
++            if let Some(stored) = table.coherent_stored_row_heights() {
++                return stored.into_iter().map(|h| hwpunit_to_px(h as i32, self.dpi)).collect();
++            }
+             rh.resize(row_count, hwpunit_to_px(400, self.dpi));
+             // [#3386] 행별 저장-선언 신뢰(렌더 전용): 전 셀이 rowspan 없이 저장
+             // LINE_SEG 를 보유하고 행별 선언(cellSz)이 모두 존재하며, 선언 합이
+@@ -3589,6 +3592,9 @@ impl LayoutEngine {
+         }
+ 
+         // 1단계: row_span==1인 셀에서 개별 행 높이 추출
++        if let Some(stored) = table.coherent_stored_row_heights() {
++            return stored.into_iter().map(|h| hwpunit_to_px(h as i32, self.dpi)).collect();
++        }
+         let mut row_heights = vec![0.0f64; row_count];
+         // 행별 **컨텐츠** 하한 — 2단계 축소 규칙(#5910)의 바닥. HeightMeasurer 미러.
+         let mut content_row_floor = vec![0.0f64; row_count];
+diff --git a/src/renderer/pagination/engine.rs b/src/renderer/pagination/engine.rs
+index 9244fbd..37f4751 100644
+--- a/src/renderer/pagination/engine.rs
++++ b/src/renderer/pagination/engine.rs
+@@ -175,6 +175,13 @@ fn stored_vpos_top_collision(prev: &Paragraph, curr: &Paragraph) -> bool {
+         return false;
+     }
+ 
++    if curr_first.vertical_pos >= 0 && curr_first.vertical_pos < 5000
++        && prev_last.vertical_pos > curr_first.vertical_pos + 1000
++        && prev_last.column_start == curr_first.column_start
++        && prev_last.segment_width == curr_first.segment_width {
++        return true;
++    }
++
+     // 앞 문단이 통째로 단 맨 위 한 줄에 있었고(첫 줄·마지막 줄 모두 vpos 0),
+     // 0 보다 아래에서 끝났는데 다음 문단이 다시 맨 위를 주장한다.
+     prev_first.vertical_pos == 0
